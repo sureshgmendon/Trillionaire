@@ -54,6 +54,11 @@ class OrderExecutionError(TrillionaireBaseException):
     pass
 
 
+class RateLimitExceededException(OrderExecutionError):
+    """Raised when SEBI retail rate limit of 10 orders/sec is exceeded."""
+    pass
+
+
 class BrokerConnectionError(TrillionaireBaseException):
     """Raised when connection to Kite Connect WebSocket or REST fails."""
     pass
