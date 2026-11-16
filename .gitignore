@@ -1,0 +1,56 @@
+# ==============================================================================
+# TRILLIONAIRE ALGO ENGINE - FINANCIAL-GRADE .GITIGNORE
+# Strict exclusion of credentials, raw tick datasets, logs, and artifacts
+# ==============================================================================
+
+# Secrets, Environment Variables & API Tokens
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+access_token*
+*token*.json
+
+# Python Bytecode, Caches & Environments
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+build/
+
+# Node.js & Frontend Artifacts (Sprint 9 Cockpit)
+node_modules/
+.next/
+out/
+
+# Research Lab Large Tick Data Stores (Parquet / DuckDB)
+research_lab/data_store/*.parquet
+research_lab/data_store/*.duckdb
+research_lab/data_store/*.arrow
+!research_lab/data_store/.gitkeep
+
+# Ensure Curated Stock Microstructure Profiles ARE Tracked
+!research_lab/artifacts/stock_profiles.json
+!research_lab/artifacts/.gitkeep
+
+# Logs & Diagnostics
+logs/*.log
+*.log
+
+# Operating System & IDE
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

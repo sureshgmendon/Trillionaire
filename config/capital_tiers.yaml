@@ -1,0 +1,53 @@
+# Trillionaire Algo Engine - Capital Sizing & Risk Tiers
+# Defines capital allocations, strict drawdown ceilings, position sizing, and leverage constraints.
+
+version: "1.0"
+
+tiers:
+  TIER_0_PAPER:
+    name: "Tier 0 - Paper Trading Incubator"
+    description: "Virtual sandbox execution for cluster regime validation and slippage benchmarking"
+    is_live: false
+    allocated_capital: 100000.0        # Rs. 1,00,000 Virtual
+    max_daily_loss_pct: 1.5           # 1.5% portfolio circuit breaker (Rs. 1,500)
+    risk_per_trade_pct: 0.5           # 0.5% max capital risk per trade (Rs. 500)
+    profit_lock_trigger_pct: 1.2      # At +1.2% daily profit, lock in floor
+    profit_lock_floor_pct: 0.6        # Floor guaranteed at +0.6% daily profit
+    max_open_positions: 3             # Max concurrent active positions
+    max_mis_leverage: 3.0             # Up to 3.0x intraday MIS gross leverage
+
+  TIER_1_MICRO:
+    name: "Tier 1 - Micro Live Capital"
+    description: "Real-money execution with minimal footprint to verify live broker fill dynamics"
+    is_live: true
+    allocated_capital: 100000.0        # Rs. 1,00,000 Live
+    max_daily_loss_pct: 1.5           # 1.5% max daily drawdown (Rs. 1,500)
+    risk_per_trade_pct: 0.5           # 0.5% max risk per trade (Rs. 500)
+    profit_lock_trigger_pct: 1.2      # Profit lock trigger at +1.2%
+    profit_lock_floor_pct: 0.6        # Floor locked at +0.6%
+    max_open_positions: 3             # Max concurrent active positions
+    max_mis_leverage: 3.0             # 3.0x intraday MIS leverage
+
+  TIER_2_GROWTH:
+    name: "Tier 2 - Growth Scale"
+    description: "Multi-cluster execution across validated sector momentum and mean-reversion setups"
+    is_live: true
+    allocated_capital: 500000.0        # Rs. 5,00,000 Live
+    max_daily_loss_pct: 1.5           # 1.5% max daily drawdown (Rs. 7,500)
+    risk_per_trade_pct: 0.5           # 0.5% max risk per trade (Rs. 2,500)
+    profit_lock_trigger_pct: 1.2      # Profit lock trigger at +1.2%
+    profit_lock_floor_pct: 0.6        # Floor locked at +0.6%
+    max_open_positions: 5             # Max concurrent active positions
+    max_mis_leverage: 3.0             # 3.0x intraday MIS leverage
+
+  TIER_3_SCALE:
+    name: "Tier 3 - Institutional Scale"
+    description: "Full portfolio diversification across top 25 liquid instruments with adaptive regime switching"
+    is_live: true
+    allocated_capital: 1000000.0       # Rs. 10,00,000 Live
+    max_daily_loss_pct: 1.5           # 1.5% max daily drawdown (Rs. 15,000)
+    risk_per_trade_pct: 0.5           # 0.5% max risk per trade (Rs. 5,000)
+    profit_lock_trigger_pct: 1.2      # Profit lock trigger at +1.2%
+    profit_lock_floor_pct: 0.6        # Floor locked at +0.6%
+    max_open_positions: 8             # Max concurrent active positions
+    max_mis_leverage: 3.0             # 3.0x intraday MIS leverage
