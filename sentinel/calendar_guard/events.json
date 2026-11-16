@@ -1,0 +1,85 @@
+{
+  "version": "1.0",
+  "description": "Trillionaire Sentinel - Scheduled Macro & Corporate Event Blackout Calendar",
+  "macro_events": [
+    {
+      "date": "2026-11-18",
+      "event": "RBI MPC Monetary Policy Statement",
+      "impact": "HIGH",
+      "posture": "CAUTION_HALF_SIZE",
+      "risk_multiplier": 0.5,
+      "description": "Reserve Bank of India bi-monthly interest rate decision and liquidity commentary"
+    },
+    {
+      "date": "2026-12-10",
+      "event": "US Fed FOMC Rate Decision",
+      "impact": "HIGH",
+      "posture": "CAUTION_HALF_SIZE",
+      "risk_multiplier": 0.5,
+      "description": "Federal Open Market Committee policy announcement and Fed Chair press conference"
+    },
+    {
+      "date": "2027-02-01",
+      "event": "Indian Union Budget",
+      "impact": "CRITICAL",
+      "posture": "DO_NOT_TRADE",
+      "risk_multiplier": 0.0,
+      "description": "Annual Union Budget presentation in Parliament - extreme volatility blackout"
+    },
+    {
+      "date": "2026-11-30",
+      "event": "India GDP Q2 Release",
+      "impact": "MEDIUM",
+      "posture": "CAUTION_HALF_SIZE",
+      "risk_multiplier": 0.5,
+      "description": "Quarterly Gross Domestic Product and fiscal deficit data release"
+    }
+  ],
+  "corporate_events": {
+    "TCS": [
+      {
+        "date": "2026-11-16",
+        "event_type": "EARNINGS",
+        "posture": "DO_NOT_TRADE",
+        "risk_multiplier": 0.0,
+        "description": "Q3 Financial Results & Board Meeting"
+      }
+    ],
+    "INFY": [
+      {
+        "date": "2026-11-20",
+        "event_type": "EARNINGS",
+        "posture": "DO_NOT_TRADE",
+        "risk_multiplier": 0.0,
+        "description": "Q3 Financial Results & Dividend Announcement"
+      }
+    ],
+    "HDFCBANK": [
+      {
+        "date": "2026-11-25",
+        "event_type": "EARNINGS",
+        "posture": "DO_NOT_TRADE",
+        "risk_multiplier": 0.0,
+        "description": "Q3 Earnings Release & Press Conference"
+      }
+    ],
+    "RELIANCE": [
+      {
+        "date": "2026-12-05",
+        "event_type": "EARNINGS",
+        "posture": "DO_NOT_TRADE",
+        "risk_multiplier": 0.0,
+        "description": "Consolidated Q3 Financial Results"
+      }
+    ],
+    "TATAMOTORS": [
+      {
+        "date": "2026-11-19",
+        "event_type": "BOARD_MEETING",
+        "posture": "CAUTION_HALF_SIZE",
+        "risk_multiplier": 0.5,
+        "description": "Board Meeting for Demerger & Capital Allocation"
+      }
+    ]
+  }
+}

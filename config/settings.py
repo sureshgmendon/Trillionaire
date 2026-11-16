@@ -49,6 +49,10 @@ class Settings(BaseSettings):
         description="Async PostgreSQL connection URI",
     )
 
+    # Sentinel AI & News API Keys
+    gemini_api_key: str = Field(default="", description="Google Gemini API key for pre-market headline triage")
+    news_api_key: str = Field(default="", description="Financial news feed API key (optional)")
+
     # IST Algorithmic Session Boundaries
     no_entry_before: str = Field(default="09:25", description="Earliest time (IST HH:MM) for new entries")
     no_entry_after: str = Field(default="14:30", description="Latest time (IST HH:MM) for new entries")

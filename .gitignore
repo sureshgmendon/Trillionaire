@@ -46,6 +46,11 @@ research_lab/data_store/*.arrow
 !research_lab/artifacts/backtest_tearsheet.json
 !research_lab/artifacts/.gitkeep
 
+# Sentinel Calendar Events & Daily Risk Manifest
+!sentinel/calendar_guard/events.json
+!sentinel/artifacts/.gitkeep
+!sentinel/artifacts/daily_sentinel_tags.json
+
 # Logs & Diagnostics
 logs/*.log
 *.log
