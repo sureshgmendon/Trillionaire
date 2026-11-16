@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     kite_access_token: Optional[str] = Field(default=None, description="Active session access token")
     kite_totp_secret: str = Field(default="", description="Base32 TOTP secret for headless 2FA auth")
     kite_user_id: str = Field(default="", description="Zerodha Client Login ID")
+    kite_password: str = Field(default="", description="Zerodha Client Login Password for Headless Auth")
 
     # Infrastructure Connection URIs
     redis_url: str = Field(default="redis://localhost:6379/0", description="Redis pub/sub & caching URI")

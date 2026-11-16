@@ -24,6 +24,7 @@ KEY_SENTINEL_TAGS = f"{REDIS_PREFIX}cache:sentinel_tags"
 KEY_CAPITAL_TIER = f"{REDIS_PREFIX}state:capital_tier"
 KEY_SYSTEM_KILL_SWITCH = f"{REDIS_PREFIX}control:kill_switch"
 KEY_DAILY_METRICS = f"{REDIS_PREFIX}metrics:daily"
+KEY_KITE_TOKEN = f"{REDIS_PREFIX}auth:kite_token"
 
 # ---------------------------------------------------------
 # NSE Market Timing & Session Rules (IST)

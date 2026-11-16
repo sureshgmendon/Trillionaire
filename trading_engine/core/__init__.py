@@ -1,8 +1,9 @@
 """
-Trillionaire Trading Engine - Core Package
-Exports pub/sub event bus and event data contracts.
+Trillionaire Trading Engine - Core Module
+Provides high-throughput EventBus and TrillionaireEngine coordinator.
 """
 
+from trading_engine.core.engine import TrillionaireEngine
 from trading_engine.core.event_bus import (
     AnomalyAlertEvent,
     CandleCloseEvent,
@@ -15,6 +16,7 @@ from trading_engine.core.event_bus import (
 )
 
 __all__ = [
+    "TrillionaireEngine",
     "EventBus",
     "bus",
     "TickEvent",
