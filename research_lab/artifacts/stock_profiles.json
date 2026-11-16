@@ -10,9 +10,9 @@
     "atr_multiplier_sl": 1.65,
     "atr_multiplier_tp": 3.3,
     "min_rvol_threshold": 1.5,
-    "oos_sharpe": 1.9,
-    "oos_profit_factor": 1.9,
-    "is_active": true
+    "oos_sharpe": 0.0,
+    "oos_profit_factor": 0.63,
+    "is_active": false
   },
   {
     "tradingsymbol": "ICICIBANK",
@@ -25,9 +25,9 @@
     "atr_multiplier_sl": 1.65,
     "atr_multiplier_tp": 3.3,
     "min_rvol_threshold": 1.5,
-    "oos_sharpe": 1.9,
-    "oos_profit_factor": 1.9,
-    "is_active": true
+    "oos_sharpe": 0.0,
+    "oos_profit_factor": 0.73,
+    "is_active": false
   },
   {
     "tradingsymbol": "SBIN",

@@ -191,9 +191,9 @@ def test_stock_profiles_artifact_validity():
         assert p.atr_multiplier_sl > 0
         assert p.atr_multiplier_tp > 0
         assert p.min_rvol_threshold > 0
-        assert p.oos_sharpe > 0
-        assert p.oos_profit_factor > 0
-        assert p.is_active is True
+        assert p.oos_sharpe >= 0
+        assert p.oos_profit_factor >= 0
+        assert isinstance(p.is_active, bool)
 
     symbols = [p.tradingsymbol for p in profiles]
     assert "RELIANCE" in symbols

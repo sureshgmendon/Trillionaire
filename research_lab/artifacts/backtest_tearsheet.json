@@ -1,0 +1,43 @@
+{
+  "evaluation_time_ist": "2026-11-16T21:37:42.597299",
+  "in_sample_ratio": 0.6,
+  "out_of_sample_ratio": 0.4,
+  "portfolio_summary": {
+    "total_trades": 353,
+    "gross_pnl_inr": -7820.78,
+    "total_statutory_charges_inr": 34461.61,
+    "net_realized_pnl_inr": -42282.39,
+    "active_symbols_count": 23,
+    "total_universe_count": 25
+  },
+  "stock_performance": [
+    {
+      "tradingsymbol": "HDFCBANK",
+      "parent_index": "NIFTY BANK",
+      "cluster_regime": "TREND_MOMENTUM",
+      "total_trades": 151,
+      "win_rate_pct": 35.76,
+      "gross_pnl": -5813.44,
+      "total_charges": 15875.9,
+      "net_pnl": -21689.34,
+      "profit_factor": 0.63,
+      "sharpe_ratio": -13.73,
+      "max_drawdown_pct": 21.15,
+      "is_active_validated": false
+    },
+    {
+      "tradingsymbol": "ICICIBANK",
+      "parent_index": "NIFTY BANK",
+      "cluster_regime": "TREND_MOMENTUM",
+      "total_trades": 202,
+      "win_rate_pct": 36.63,
+      "gross_pnl": -2007.34,
+      "total_charges": 18585.71,
+      "net_pnl": -20593.05,
+      "profit_factor": 0.73,
+      "sharpe_ratio": -7.12,
+      "max_drawdown_pct": 20.1,
+      "is_active_validated": false
+    }
+  ]
+}

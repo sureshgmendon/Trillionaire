@@ -41,8 +41,9 @@ research_lab/data_store/*.duckdb
 research_lab/data_store/*.arrow
 !research_lab/data_store/.gitkeep
 
-# Ensure Curated Stock Microstructure Profiles ARE Tracked
+# Ensure Curated Stock Microstructure Profiles & Tearsheets ARE Tracked
 !research_lab/artifacts/stock_profiles.json
+!research_lab/artifacts/backtest_tearsheet.json
 !research_lab/artifacts/.gitkeep
 
 # Logs & Diagnostics
