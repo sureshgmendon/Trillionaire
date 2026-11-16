@@ -59,19 +59,22 @@ class PaperBroker:
         self.orders[order.order_id] = order
 
         tick = self.latest_ticks.get(order.tradingsymbol)
-        if tick is not None and order.order_type == OrderType.LIMIT and order.limit_price is not None:
-            # Check marketability
-            if order.side == Side.BUY and order.limit_price >= tick.ltp:
-                # Marketable BUY: fill price is tick LTP + slippage, capped at limit price
-                sim_price = round(tick.ltp * (1.0 + self.slippage_rate), 2)
-                fill_price = min(order.limit_price, sim_price)
-                return await self._execute_fill(order, fill_price, tick.timestamp_ist)
+        if order.order_type == OrderType.LIMIT and order.limit_price is not None:
+            if tick is not None:
+                # Check marketability against latest tick
+                if order.side == Side.BUY and order.limit_price >= tick.ltp:
+                    sim_price = round(tick.ltp * (1.0 + self.slippage_rate), 2)
+                    fill_price = min(order.limit_price, sim_price)
+                    return await self._execute_fill(order, fill_price, tick.timestamp_ist)
 
-            elif order.side == Side.SELL and order.limit_price <= tick.ltp:
-                # Marketable SELL: fill price is tick LTP - slippage, floored at limit price
-                sim_price = round(tick.ltp * (1.0 - self.slippage_rate), 2)
-                fill_price = max(order.limit_price, sim_price)
-                return await self._execute_fill(order, fill_price, tick.timestamp_ist)
+                elif order.side == Side.SELL and order.limit_price <= tick.ltp:
+                    sim_price = round(tick.ltp * (1.0 - self.slippage_rate), 2)
+                    fill_price = max(order.limit_price, sim_price)
+                    return await self._execute_fill(order, fill_price, tick.timestamp_ist)
+            else:
+                # No tick cached yet: execute marketable limit order immediately at limit price
+                fill_dt = order.created_at_ist or datetime.now(IST_TZ)
+                return await self._execute_fill(order, order.limit_price, fill_dt)
 
         # Resting limit order (not immediately marketable)
         self.open_orders[order.order_id] = order

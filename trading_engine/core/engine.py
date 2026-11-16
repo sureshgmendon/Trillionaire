@@ -228,6 +228,23 @@ class TrillionaireEngine:
 
         logger.info("[ENGINE STOPPED] Engine successfully halted.")
 
+    async def emergency_flatten(self, reason: str = "EMERGENCY_FLATTEN") -> list[Any]:
+        """Liquidates all open positions immediately and activates the risk kill-switch."""
+        from trading_engine.core.event_bus import RiskAlertEvent
+
+        logger.critical(f"[EMERGENCY FLATTEN] Triggered: {reason}")
+        self.risk_gatekeeper.kill_switch_active = True
+        self.risk_gatekeeper.circuit_breaker_reason = f"Emergency flatten: {reason}"
+        flattened_orders = await self.order_manager.flatten_all_positions(reason=reason)
+        await self.bus.publish(
+            RiskAlertEvent(
+                symbol="ALL",
+                level="CIRCUIT_BREAKER",
+                message=f"Emergency kill switch triggered: {reason}. Liquidated {len(flattened_orders)} positions.",
+            )
+        )
+        return flattened_orders
+
     def get_status(self) -> Dict[str, Any]:
         """Returns comprehensive diagnostic and operational metrics snapshot."""
         return {

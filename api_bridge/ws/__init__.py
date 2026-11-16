@@ -1,4 +1,8 @@
 """
-Trillionaire API Bridge - WebSocket Modules
-Real-time telemetry and order book broadcast streams.
+Trillionaire API Bridge - WebSocket Module
+Exports TelemetryManager for real-time WebSocket client streaming.
 """
+
+from api_bridge.ws.telemetry_manager import TelemetryManager, telemetry_manager
+
+__all__ = ["TelemetryManager", "telemetry_manager"]

@@ -197,3 +197,6 @@ class HistoricalTickReplayer:
 
         logger.info(f"Session replay complete: {total_ticks:,} ticks published onto EventBus.")
         return total_ticks
+
+    # Alias for replay_session
+    replay_day = replay_session

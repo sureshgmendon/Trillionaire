@@ -54,6 +54,14 @@ class Settings(BaseSettings):
     gemini_api_key: str = Field(default="", description="Google Gemini API key for pre-market headline triage")
     news_api_key: str = Field(default="", description="Financial news feed API key (optional)")
 
+    # Telegram Bot & Operator Security
+    telegram_bot_token: str = Field(default="", description="Telegram Bot API token for mobile push alerts")
+    telegram_chat_id: str = Field(default="", description="Authorized Telegram Chat ID for alerts and /kill command")
+    trillionaire_admin_key: str = Field(
+        default="trillionaire-dev-secret-key-change-in-prod",
+        description="Admin API Secret Key for Mutating /control/* Endpoints",
+    )
+
     # IST Algorithmic Session Boundaries
     no_entry_before: str = Field(default="09:25", description="Earliest time (IST HH:MM) for new entries")
     no_entry_after: str = Field(default="14:30", description="Latest time (IST HH:MM) for new entries")
