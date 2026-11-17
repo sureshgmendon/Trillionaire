@@ -1,0 +1,29 @@
+# ==============================================================================
+# TRILLIONAIRE ALGO ENGINE - SYSTEMD SERVICE UNIT FILE
+# Ubuntu 22.04 / 24.04 LTS Service for Production Docker Compose Daemon
+# Place at: /etc/systemd/system/trillionaire.service
+# ==============================================================================
+
+[Unit]
+Description=Trillionaire Automated Algorithmic Trading Platform
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/trillionaire/deploy
+ExecStartPre=-/usr/bin/docker compose -f docker-compose.prod.yml down --remove-orphans
+ExecStart=/usr/bin/docker compose -f docker-compose.prod.yml up --build
+ExecStop=/usr/bin/docker compose -f docker-compose.prod.yml down
+Restart=always
+RestartSec=10s
+TimeoutStartSec=300
+TimeoutStopSec=60
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=trillionaire
+
+[Install]
+WantedBy=multi-user.target
