@@ -131,6 +131,13 @@ export interface RiskAlert {
   timestamp_ist: string;
 }
 
+export interface FunnelMetrics {
+  candles_evaluated: number;
+  passed_stock_rule: number;
+  passed_sector_filter: number;
+  signals_emitted: number;
+}
+
 export interface EngineStatus {
   mode: TradingMode;
   is_running: boolean;
@@ -144,7 +151,39 @@ export interface EngineStatus {
   profit_floor_armed: boolean;
   open_positions_count: number;
   active_stocks_count: number;
+  funnel_metrics?: FunnelMetrics;
   timestamp_ist: string;
+}
+
+export interface RuntimeSettings {
+  has_kite_key: boolean;
+  kite_api_key_masked: string;
+  kite_user_id: string;
+  has_kite_secret: boolean;
+  has_kite_password: boolean;
+  has_totp_secret: boolean;
+  has_gemini_key: boolean;
+  has_telegram: boolean;
+  trading_mode: TradingMode;
+  active_capital_tier: string;
+  allocated_capital: number;
+  available_capital_tiers: string[];
+  engine_running: boolean;
+  engine_booted: boolean;
+  timestamp_ist: string;
+}
+
+export interface UpdateSettingsPayload {
+  kite_api_key?: string;
+  kite_api_secret?: string;
+  kite_user_id?: string;
+  kite_password?: string;
+  kite_totp_secret?: string;
+  gemini_api_key?: string;
+  telegram_bot_token?: string;
+  telegram_chat_id?: string;
+  trading_mode?: TradingMode;
+  active_capital_tier?: string;
 }
 
 export interface SnapshotPayload {

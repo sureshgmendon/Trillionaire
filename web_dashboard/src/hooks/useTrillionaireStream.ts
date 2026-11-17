@@ -245,6 +245,41 @@ export function useTrillionaireStream() {
     []
   );
 
+  // 6. Engine Lifecycle Actions (Start & Stop)
+  const startEngine = useCallback(async () => {
+    try {
+      const resp = await fetch(`${API_BASE_URL}/api/v1/control/engine/start`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-API-Key": ADMIN_KEY,
+        },
+      });
+      if (resp.ok) {
+        await fetchInitialState();
+      }
+    } catch (e) {
+      console.error("Failed to start engine:", e);
+    }
+  }, [fetchInitialState]);
+
+  const stopEngine = useCallback(async () => {
+    try {
+      const resp = await fetch(`${API_BASE_URL}/api/v1/control/engine/stop`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-API-Key": ADMIN_KEY,
+        },
+      });
+      if (resp.ok) {
+        await fetchInitialState();
+      }
+    } catch (e) {
+      console.error("Failed to stop engine:", e);
+    }
+  }, [fetchInitialState]);
+
   useEffect(() => {
     fetchInitialState();
     connectWebSocket();
@@ -274,6 +309,8 @@ export function useTrillionaireStream() {
     setSelectedSymbol,
     triggerEmergencyFlatten,
     triggerReplay,
+    startEngine,
+    stopEngine,
     refreshState: fetchInitialState,
   };
 }

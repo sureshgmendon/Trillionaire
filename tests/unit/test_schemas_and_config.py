@@ -351,10 +351,10 @@ def test_sector_map_loading():
     assert "NIFTY ENERGY" in indices
 
     stocks = sector_data["stocks"]
-    assert len(stocks) == 25, f"Expected 25 stocks in sector_map.yaml, found {len(stocks)}"
+    assert len(stocks) == 100, f"Expected 100 stocks in sector_map.yaml, found {len(stocks)}"
 
     tracked_symbols = settings.get_tracked_symbols()
-    assert len(tracked_symbols) == 25
+    assert len(tracked_symbols) == 100
     expected_symbols = [
         "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "SBIN",
         "TATAMOTORS", "M&M", "SUNPHARMA", "LT", "BHARTIARTL", "ITC"

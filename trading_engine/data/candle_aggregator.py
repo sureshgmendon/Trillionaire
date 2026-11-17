@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from loguru import logger
 import numpy as np
+import polars as pl
 
 from config.settings import settings
 from shared.constants import IST_TZ
@@ -98,6 +99,94 @@ class CandleAggregator:
                 state.atr_14 = initial_atr_14
             if rvol_baselines is not None:
                 state.rvol_baselines.update(rvol_baselines)
+
+    def warmup_from_parquet(
+        self,
+        symbols: Optional[List[str]] = None,
+        data_dir: Optional[Path] = None,
+        bars_count: int = 250,
+    ) -> Dict[str, Dict[str, float]]:
+        """
+        Loads the last 250 1-minute historical bars per symbol from research_lab/data_store/
+        so EMA(200), EMA(20), and ATR(14) are 100% warmed up and ready right at 09:25 AM IST.
+        """
+        store_path = data_dir or (Path(__file__).resolve().parent.parent.parent / "research_lab" / "data_store")
+        if not store_path.exists():
+            logger.warning(f"[WARMUP] Historical data store directory not found: {store_path}")
+            return {}
+
+        target_symbols = list(symbols) if symbols is not None else settings.get_tracked_symbols()
+        # Also include any parent index symbols
+        sector_data = settings.load_sector_map()
+        indices = list(sector_data.get("benchmark_indices", {}).keys())
+        all_to_warm = list(dict.fromkeys(target_symbols + indices))
+
+        warmed: Dict[str, Dict[str, float]] = {}
+
+        for sym in all_to_warm:
+            # Check filename candidates
+            candidates = [
+                store_path / f"{sym}_1m.parquet",
+                store_path / f"{sym.replace(' ', '_')}_1m.parquet",
+                store_path / f"{sym.replace('-', '_')}_1m.parquet",
+            ]
+            parquet_file = next((f for f in candidates if f.exists()), None)
+            if parquet_file is None:
+                continue
+
+            try:
+                df = pl.read_parquet(parquet_file, columns=["close", "high", "low"])
+                if len(df) == 0:
+                    continue
+
+                tail_df = df.tail(bars_count)
+                closes = tail_df["close"].to_numpy()
+                highs = tail_df["high"].to_numpy()
+                lows = tail_df["low"].to_numpy()
+
+                n = len(closes)
+                if n == 0:
+                    continue
+
+                alpha_200 = 2.0 / (200 + 1)
+                alpha_20 = 2.0 / (20 + 1)
+                alpha_atr = 1.0 / 14.0
+
+                ema_200 = float(closes[0])
+                ema_20 = float(closes[0])
+                atr_14 = float(highs[0] - lows[0])
+                prev_c = float(closes[0])
+
+                for i in range(1, n):
+                    c = float(closes[i])
+                    h = float(highs[i])
+                    l = float(lows[i])
+                    ema_200 = c * alpha_200 + ema_200 * (1.0 - alpha_200)
+                    ema_20 = c * alpha_20 + ema_20 * (1.0 - alpha_20)
+                    tr = max(h - l, abs(h - prev_c), abs(l - prev_c))
+                    atr_14 = atr_14 * (1.0 - alpha_atr) + tr * alpha_atr
+                    prev_c = c
+
+                # Seed into state for all timeframes
+                for tf in self.timeframes:
+                    st = self.get_state(sym, tf)
+                    st.ema_200 = round(ema_200, 2)
+                    st.ema_20 = round(ema_20, 2)
+                    st.atr_14 = round(atr_14, 2)
+                    st.prev_close = round(prev_c, 2)
+
+                warmed[sym] = {
+                    "ema_200": round(ema_200, 2),
+                    "ema_20": round(ema_20, 2),
+                    "atr_14": round(atr_14, 2),
+                    "prev_close": round(prev_c, 2),
+                    "bars_loaded": n,
+                }
+            except Exception as e:
+                logger.warning(f"[WARMUP] Error warming up {sym} from {parquet_file.name}: {e}")
+
+        logger.info(f"[WARMUP COMPLETE] Pre-warmed indicators for {len(warmed)} instruments from historical parquet store")
+        return warmed
 
     def _get_bucket_start_time(self, dt: datetime, timeframe: Timeframe) -> datetime:
         """

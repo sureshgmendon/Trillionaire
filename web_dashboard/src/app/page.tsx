@@ -6,6 +6,7 @@ import { InteractiveChartPanel } from "@/components/InteractiveChartPanel";
 import { WatchlistAndSentinelMatrix } from "@/components/WatchlistAndSentinelMatrix";
 import { PositionsAndOrdersTabs } from "@/components/PositionsAndOrdersTabs";
 import { ReplayControlModal } from "@/components/ReplayControlModal";
+import { SettingsControlModal } from "@/components/SettingsControlModal";
 import { useTrillionaireStream } from "@/hooks/useTrillionaireStream";
 
 export default function CockpitPage() {
@@ -24,10 +25,13 @@ export default function CockpitPage() {
     setSelectedSymbol,
     triggerEmergencyFlatten,
     triggerReplay,
+    startEngine,
+    stopEngine,
     refreshState,
   } = useTrillionaireStream();
 
   const [isReplayModalOpen, setIsReplayModalOpen] = useState(false);
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
 
   const selectedProfile = profiles.find((p) => p.tradingsymbol === selectedSymbol);
   const selectedCandles = candles[selectedSymbol] || [];
@@ -41,6 +45,9 @@ export default function CockpitPage() {
         status={status}
         onEmergencyFlatten={triggerEmergencyFlatten}
         onOpenReplayModal={() => setIsReplayModalOpen(true)}
+        onOpenSettingsModal={() => setIsSettingsModalOpen(true)}
+        onStartEngine={startEngine}
+        onStopEngine={stopEngine}
         onRefresh={refreshState}
       />
 
@@ -87,6 +94,13 @@ export default function CockpitPage() {
         isOpen={isReplayModalOpen}
         onClose={() => setIsReplayModalOpen(false)}
         onTriggerReplay={triggerReplay}
+      />
+
+      {/* Settings & Credentials Control Modal */}
+      <SettingsControlModal
+        isOpen={isSettingsModalOpen}
+        onClose={() => setIsSettingsModalOpen(false)}
+        onSettingsSaved={refreshState}
       />
     </div>
   );

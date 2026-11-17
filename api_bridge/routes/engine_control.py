@@ -87,6 +87,12 @@ async def get_engine_status(engine: TrillionaireEngine = Depends(get_engine)) ->
         "profit_floor_armed": st["profit_lock_armed"],
         "open_positions_count": st["open_positions_count"],
         "active_stocks_count": len(engine.strategy_runner.profiles),
+        "funnel_metrics": st.get("funnel_metrics", {
+            "candles_evaluated": 0,
+            "passed_stock_rule": 0,
+            "passed_sector_filter": 0,
+            "signals_emitted": 0,
+        }),
         "timestamp_ist": datetime.now(IST_TZ).isoformat(),
     }
 

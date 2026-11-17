@@ -117,6 +117,23 @@ class PortfolioRiskGatekeeper:
                 "max_mis_leverage": 3.0,
             }
 
+    def set_capital_tier(self, tier_name: str) -> Dict[str, Any]:
+        """Dynamically reconfigures risk limits and allocated capital based on selected capital tier."""
+        self.tier_name = tier_name
+        tier_config = self._load_tier_config(tier_name)
+        self.allocated_capital = float(tier_config.get("allocated_capital", 100000.0))
+        self.max_daily_loss_pct = float(tier_config.get("max_daily_loss_pct", 1.5))
+        self.risk_per_trade_pct = float(tier_config.get("risk_per_trade_pct", 0.5))
+        self.profit_lock_trigger_pct = float(tier_config.get("profit_lock_trigger_pct", 1.2))
+        self.profit_lock_floor_pct = float(tier_config.get("profit_lock_floor_pct", 0.6))
+        self.max_open_positions = int(tier_config.get("max_open_positions", 3))
+        self.max_mis_leverage = float(tier_config.get("max_mis_leverage", 3.0))
+        logger.info(
+            f"[RISK TIER UPDATED] Switched to {tier_name}: Capital=Rs.{self.allocated_capital:,.2f}, "
+            f"Risk/Trade={self.risk_per_trade_pct}%, MaxPositions={self.max_open_positions}"
+        )
+        return tier_config
+
     def set_flatten_handler(self, handler: FlattenCallback) -> None:
         """Sets the liquidation callback invoked when circuit breakers trip."""
         self.flatten_handler = handler

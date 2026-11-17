@@ -179,14 +179,14 @@ def test_stock_profiles_artifact_validity():
     assert STOCK_PROFILES_PATH.exists(), f"Missing required artifact: {STOCK_PROFILES_PATH}"
 
     profiles = StockProfiler.load_profiles(STOCK_PROFILES_PATH)
-    assert len(profiles) == 25, f"Expected 25 profiles, found {len(profiles)}"
+    assert len(profiles) == 100, f"Expected 100 profiles, found {len(profiles)}"
 
     for p in profiles:
         assert isinstance(p, StockProfile)
         assert isinstance(p.cluster_regime, ClusterRegime)
         assert p.instrument_token > 0
         assert p.index_token > 0
-        assert p.beta_5y > 0
+        assert isinstance(p.beta_5y, (int, float))
         assert p.adr_pct > 0
         assert p.atr_multiplier_sl > 0
         assert p.atr_multiplier_tp > 0

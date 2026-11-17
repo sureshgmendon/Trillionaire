@@ -257,6 +257,17 @@ export const InteractiveChartPanel: React.FC<InteractiveChartPanelProps> = ({
     }
   }, [chartData, showVwap, showEma200, showVolume, markers]);
 
+  // Auto-fit chart timescale whenever symbol changes or candles are loaded
+  useEffect(() => {
+    if (chartRef.current && chartData.length > 0) {
+      // Small timeout to allow series data ingestion by Lightweight Charts
+      const timer = setTimeout(() => {
+        chartRef.current?.timeScale().fitContent();
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [symbol, chartData.length]);
+
   // Handle live tick update into last candle
   useEffect(() => {
     if (!tick || !candleSeriesRef.current || chartData.length === 0) return;

@@ -87,6 +87,14 @@ class LiveStrategyRunner:
         # Generated signals history
         self.emitted_signals: List[Signal] = []
 
+        # Real-time funnel metrics for dashboard telemetry
+        self.funnel_metrics: Dict[str, int] = {
+            "candles_evaluated": 0,
+            "passed_stock_rule": 0,
+            "passed_sector_filter": 0,
+            "signals_emitted": 0,
+        }
+
         # Wire up event subscriptions
         self._register_subscribers()
 
@@ -184,6 +192,9 @@ class LiveStrategyRunner:
         if profile is None or not profile.is_active:
             return None
 
+        # Track evaluated candles in signal funnel
+        self.funnel_metrics["candles_evaluated"] += 1
+
         # 1. Gate 1: Pre-Market Sentinel Risk Assessment
         tag = self.get_sentinel_tag(sym)
         if tag.status == SentinelStatus.DO_NOT_TRADE or tag.risk_multiplier <= 0.0:
@@ -255,6 +266,47 @@ class LiveStrategyRunner:
             strategy = get_strategy_for_regime(profile.cluster_regime)
             self._strategies[profile.cluster_regime] = strategy
 
+        # Track stock rule & sector filter passes for telemetry funnel
+        passed_stock = False
+        passed_sector = False
+        c = stock_bar["close"]
+        v = stock_bar.get("vwap")
+        e200 = stock_bar.get("ema_200")
+        oh = stock_bar.get("or_high")
+        ol = stock_bar.get("or_low")
+
+        if profile.cluster_regime == ClusterRegime.TREND_MOMENTUM:
+            long_stk = oh is not None and v is not None and e200 is not None and c > oh and c > v and c > e200
+            short_stk = ol is not None and v is not None and e200 is not None and c < ol and c < v and c < e200
+            passed_stock = long_stk or short_stk
+            if passed_stock and idx_candle.vwap is not None:
+                passed_sector = (long_stk and idx_candle.close > idx_candle.vwap and idx_candle.close > idx_ema_20) or (
+                    short_stk and idx_candle.close < idx_candle.vwap and idx_candle.close < idx_ema_20
+                )
+        elif profile.cluster_regime == ClusterRegime.MEAN_REVERSION:
+            cb, ct = cpr_range
+            a14 = stock_bar.get("atr_14", 5.0)
+            long_stk = v is not None and c <= (v - 1.5 * a14) and c >= cb
+            short_stk = v is not None and c >= (v + 1.5 * a14) and c <= ct
+            passed_stock = long_stk or short_stk
+            if passed_stock and idx_candle.vwap is not None and idx_candle.vwap > 0:
+                passed_sector = abs(idx_candle.close - idx_candle.vwap) / idx_candle.vwap <= 0.01
+        elif profile.cluster_regime == ClusterRegime.HIGH_RVOL_BREAKOUT:
+            rv = stock_bar.get("rvol", 1.0)
+            min_rv = profile.min_rvol_threshold
+            long_stk = oh is not None and rv >= min_rv and c > oh
+            short_stk = ol is not None and rv >= min_rv and c < ol
+            passed_stock = long_stk or short_stk
+            if passed_stock and stock_bar.get("open") and idx_candle.open:
+                stk_ret = (c - stock_bar["open"]) / stock_bar["open"]
+                idx_ret = (idx_candle.close - idx_candle.open) / idx_candle.open
+                passed_sector = abs(stk_ret - idx_ret) >= 0.004
+
+        if passed_stock:
+            self.funnel_metrics["passed_stock_rule"] += 1
+        if passed_sector:
+            self.funnel_metrics["passed_sector_filter"] += 1
+
         prev_bar = self._prev_candles.get(sym)
         signal = strategy.evaluate(
             stock_bar=stock_bar,
@@ -267,6 +319,12 @@ class LiveStrategyRunner:
         self._prev_candles[sym] = stock_bar
 
         if signal is not None:
+            self.funnel_metrics["signals_emitted"] += 1
+            if not passed_stock:
+                self.funnel_metrics["passed_stock_rule"] += 1
+            if not passed_sector:
+                self.funnel_metrics["passed_sector_filter"] += 1
+
             logger.info(
                 f"[SIGNAL GENERATED] {signal.strategy_name} -> {signal.tradingsymbol} {signal.side.value} "
                 f"@ {signal.entry_price} (SL: {signal.stop_loss}, TP: {signal.target_price}, Conf: {signal.confidence})"

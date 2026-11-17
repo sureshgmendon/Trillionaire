@@ -153,10 +153,19 @@ class TrillionaireEngine:
         # 4. Reload Stock Profiles
         self.strategy_runner.load_profiles_from_disk()
 
+        # 5. Morning Indicator Warmup from Parquet
+        warmed = self.candle_aggregator.warmup_from_parquet(
+            symbols=list(self.strategy_runner.profiles.keys())
+        )
+        # Seed parent index EMA(20) into strategy runner
+        for sym, metrics in warmed.items():
+            if "NIFTY" in sym:
+                self.strategy_runner.seed_index_ema_20(sym, metrics.get("ema_20", 0.0))
+
         self.is_booted = True
         logger.info(
             f"Premarket boot sequence complete. Active monitored universe: {len(self.strategy_runner.profiles)} stocks, "
-            f"Sentinel tags: {len(sentinel_tags)}"
+            f"Sentinel tags: {len(sentinel_tags)}, Pre-warmed instruments: {len(warmed)}"
         )
 
         return {
@@ -164,6 +173,7 @@ class TrillionaireEngine:
             "trade_date": self.current_trade_date.isoformat(),
             "monitored_stocks": len(self.strategy_runner.profiles),
             "sentinel_tags": len(sentinel_tags),
+            "warmed_up_symbols": len(warmed),
             "trading_mode": self.trading_mode.value,
         }
 
@@ -245,6 +255,11 @@ class TrillionaireEngine:
         )
         return flattened_orders
 
+    def set_trading_mode(self, mode: TradingMode) -> None:
+        """Updates trading mode dynamically."""
+        self.trading_mode = mode
+        logger.info(f"[ENGINE MODE UPDATED] Trading mode set to {mode.value}")
+
     def get_status(self) -> Dict[str, Any]:
         """Returns comprehensive diagnostic and operational metrics snapshot."""
         return {
@@ -259,6 +274,12 @@ class TrillionaireEngine:
             "kill_switch_active": self.risk_gatekeeper.kill_switch_active,
             "profit_lock_armed": self.risk_gatekeeper.profit_lock_armed,
             "open_positions_count": len(self.order_manager.open_positions),
+            "funnel_metrics": getattr(self.strategy_runner, "funnel_metrics", {
+                "candles_evaluated": 0,
+                "passed_stock_rule": 0,
+                "passed_sector_filter": 0,
+                "signals_emitted": 0,
+            }),
             "open_positions": {
                 sym: {
                     "side": pos.side.value,

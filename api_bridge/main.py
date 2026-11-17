@@ -13,6 +13,7 @@ from loguru import logger
 
 from api_bridge.routes.engine_control import router as control_router, set_engine
 from api_bridge.routes.health import router as health_router
+from api_bridge.routes.settings_control import router as settings_router
 from api_bridge.ws.telemetry_manager import telemetry_manager
 from config.settings import settings
 from shared.constants import APP_NAME, APP_VERSION
@@ -77,6 +78,7 @@ app.add_middleware(
 # Mount REST Routers
 app.include_router(health_router, prefix="/api/v1")
 app.include_router(control_router, prefix="/api/v1")
+app.include_router(settings_router, prefix="/api/v1")
 
 
 @app.websocket("/ws/stream")

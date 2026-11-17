@@ -9,6 +9,8 @@ import {
   Power,
   RefreshCw,
   Shield,
+  Sliders,
+  Square,
   TrendingDown,
   TrendingUp,
   Zap,
@@ -21,6 +23,9 @@ interface TopTelemetryBarProps {
   status: EngineStatus | null;
   onEmergencyFlatten: () => Promise<{ success: boolean; message: string }>;
   onOpenReplayModal: () => void;
+  onOpenSettingsModal: () => void;
+  onStartEngine: () => Promise<void>;
+  onStopEngine: () => Promise<void>;
   onRefresh: () => void;
 }
 
@@ -29,6 +34,9 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
   status,
   onEmergencyFlatten,
   onOpenReplayModal,
+  onOpenSettingsModal,
+  onStartEngine,
+  onStopEngine,
   onRefresh,
 }) => {
   const [istTime, setIstTime] = useState<string>("");
@@ -155,6 +163,26 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
               {status?.capital_tier || "TIER_0_PAPER"}
             </span>
           </div>
+
+          {/* Signal Funnel Counters */}
+          {status?.funnel_metrics && (
+            <>
+              <div className="h-3.5 w-px bg-cockpit-border" />
+              <div
+                className="flex items-center space-x-1.5 text-[11px] font-mono text-cockpit-muted"
+                title="Live Signal Evaluation Funnel (Candles Evaluated → Stock Filter → Sector Filter → Emitted Signals)"
+              >
+                <span className="text-cockpit-blue font-semibold">Funnel:</span>
+                <span>{status.funnel_metrics.candles_evaluated} Eval</span>
+                <span>→</span>
+                <span className="text-cyan-400 font-semibold">{status.funnel_metrics.passed_stock_rule} Stock</span>
+                <span>→</span>
+                <span className="text-amber-400 font-semibold">{status.funnel_metrics.passed_sector_filter} Sector</span>
+                <span>→</span>
+                <span className="text-cockpit-green font-bold">{status.funnel_metrics.signals_emitted} Sig</span>
+              </div>
+            </>
+          )}
         </div>
 
         {/* Daily MTM PnL Telemetry */}
@@ -218,6 +246,37 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
 
           {/* Action Buttons */}
           <div className="flex items-center space-x-2">
+            {/* Start / Stop Engine Toggle */}
+            {status?.is_running ? (
+              <button
+                onClick={onStopEngine}
+                title="Stop Live Trading Engine"
+                className="px-2.5 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/50 text-amber-400 font-mono text-xs flex items-center space-x-1.5 transition"
+              >
+                <Square className="h-3.5 w-3.5 fill-current" />
+                <span className="hidden md:inline font-semibold">Stop Engine</span>
+              </button>
+            ) : (
+              <button
+                onClick={onStartEngine}
+                title="Start Trading Engine (Warmup & Stream)"
+                className="px-2.5 py-1.5 rounded-lg bg-cockpit-green/20 hover:bg-cockpit-green/30 border border-cockpit-green/50 text-cockpit-green font-mono text-xs flex items-center space-x-1.5 transition"
+              >
+                <Play className="h-3.5 w-3.5 fill-current" />
+                <span className="hidden md:inline font-semibold">Start Engine</span>
+              </button>
+            )}
+
+            {/* Settings & Credentials Modal Trigger */}
+            <button
+              onClick={onOpenSettingsModal}
+              title="Configure API Keys, Mode & Capital Tier"
+              className="px-2.5 py-1.5 rounded-lg bg-cockpit-surface hover:bg-cockpit-hover border border-cockpit-border text-cockpit-text hover:text-white transition flex items-center space-x-1.5 text-xs font-medium font-mono"
+            >
+              <Sliders className="h-3.5 w-3.5 text-cockpit-blue" />
+              <span className="hidden lg:inline">Settings & Keys</span>
+            </button>
+
             <button
               onClick={onOpenReplayModal}
               title="Launch Historical Session Replay"

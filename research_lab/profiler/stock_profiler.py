@@ -296,3 +296,8 @@ class StockProfiler:
             data = json.load(f)
 
         return [StockProfile.model_validate(item) for item in data]
+
+
+if __name__ == "__main__":
+    profiler = StockProfiler()
+    profiler.generate_and_export_profiles()

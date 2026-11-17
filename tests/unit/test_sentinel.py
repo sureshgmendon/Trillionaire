@@ -144,7 +144,7 @@ def test_sentinel_orchestrator_conservative_merge(tmp_path: Path):
         current_date_ist=date(2026, 11, 16),
     )
 
-    assert len(tags) == 25
+    assert len(tags) == 100
 
     # TCS: min(0.0, 0.5) = 0.0 -> DO_NOT_TRADE
     tcs_tag = tags["TCS"]

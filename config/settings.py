@@ -154,3 +154,66 @@ class Settings(BaseSettings):
 
 # Singleton instance
 settings = Settings()
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+DEFAULT_ENV_FILE = ROOT_DIR / ".env"
+
+
+def persist_env_updates(updates: Dict[str, Any], env_path: Optional[Path] = None) -> None:
+    """
+    Safely writes updated environment variables to .env file,
+    preserving existing keys, comments, and file structure.
+    """
+    target_env = env_path or DEFAULT_ENV_FILE
+    existing_lines: List[str] = []
+    if target_env.exists():
+        with open(target_env, "r", encoding="utf-8") as f:
+            existing_lines = f.readlines()
+    elif (ROOT_DIR / ".env.example").exists():
+        with open(ROOT_DIR / ".env.example", "r", encoding="utf-8") as f:
+            existing_lines = f.readlines()
+
+    # Map of UPPERCASE_KEY -> str_value
+    formatted_updates: Dict[str, str] = {}
+    for k, v in updates.items():
+        if v is None:
+            continue
+        key_upper = k.upper()
+        if hasattr(v, "value"):
+            str_val = str(v.value)
+        else:
+            str_val = str(v)
+        formatted_updates[key_upper] = str_val
+
+    updated_keys = set()
+    new_lines: List[str] = []
+
+    for line in existing_lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            var_name = stripped.split("=", 1)[0].strip()
+            if var_name in formatted_updates:
+                val = formatted_updates[var_name]
+                new_lines.append(f'{var_name}="{val}"\n')
+                updated_keys.add(var_name)
+                continue
+        new_lines.append(line)
+
+    # Append any keys that were not already in the file
+    for var_name, val in formatted_updates.items():
+        if var_name not in updated_keys:
+            new_lines.append(f'{var_name}="{val}"\n')
+
+    with open(target_env, "w", encoding="utf-8") as f:
+        f.writelines(new_lines)
+
+
+def reload_settings_from_env(env_path: Optional[Path] = None) -> Settings:
+    """Reloads the global settings singleton from .env file."""
+    global settings
+    target_env = env_path or DEFAULT_ENV_FILE
+    new_settings = Settings(_env_file=target_env)
+    for field_name in new_settings.model_fields.keys():
+        val = getattr(new_settings, field_name)
+        setattr(settings, field_name, val)
+    return settings
