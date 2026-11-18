@@ -20,9 +20,9 @@ import {
   Tick,
 } from "@/types/telemetry";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000/ws/stream";
-const ADMIN_KEY = process.env.NEXT_PUBLIC_ADMIN_KEY || "trillionaire-dev-secret-key-change-in-prod";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://32.236.106.39";
+const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://32.236.106.39/ws/stream";
+const ADMIN_KEY = "trillionaire-local-admin-123";
 
 export type ConnectionStatus = "CONNECTED" | "RECONNECTING" | "OFFLINE";
 

@@ -1,3 +1,4 @@
+import os
 """
 Trillionaire API Bridge - Settings & Engine Lifecycle Control REST Endpoints
 Provides administrative control over runtime configuration, credentials, capital tiers,
@@ -15,6 +16,39 @@ from config.settings import persist_env_updates, reload_settings_from_env, setti
 from shared.constants import IST_TZ
 from shared.enums import DataFeederType, TradingMode
 from trading_engine.core.engine import TrillionaireEngine
+
+
+
+def _load_env_map() -> dict:
+
+    env_map = {}
+
+    for path in ["/opt/trillionaire/.env", ".env"]:
+
+        try:
+
+            with open(path, encoding="utf-8") as f:
+
+                for ln in f:
+
+                    ln = ln.strip()
+
+                    if ln and not ln.startswith("#") and "=" in ln:
+
+                        k, v = ln.split("=", 1)
+
+                        env_map[k.strip()] = v.strip().strip('"').strip("'")
+
+            if env_map:
+
+                break
+
+        except Exception:
+
+            pass
+
+    return env_map
+
 
 router = APIRouter(prefix="", tags=["Settings & Lifecycle Control"])
 
@@ -68,6 +102,21 @@ async def get_runtime_settings(engine: TrillionaireEngine = Depends(get_engine))
     """
     available_tiers = list(settings.load_capital_tiers().keys())
 
+    env_map = _load_env_map()
+
+    def _real(v: str) -> str:
+
+        v = (v or "").strip()
+
+        return "" if not v or v.startswith("your_") else v
+
+    kite_key = _real(settings.kite_api_key) or _real(os.environ.get("KITE_API_KEY")) or _real(env_map.get("KITE_API_KEY"))
+
+    kite_uid = _real(settings.kite_user_id) or _real(os.environ.get("KITE_USER_ID")) or _real(env_map.get("KITE_USER_ID"))
+
+    totp_sec = _real(settings.kite_totp_secret) or _real(os.environ.get("KITE_TOTP_SECRET")) or _real(env_map.get("KITE_TOTP_SECRET"))
+
+    
     return {
         "has_kite_key": is_credential_configured(settings.kite_api_key),
         "kite_api_key_masked": mask_secret(settings.kite_api_key),

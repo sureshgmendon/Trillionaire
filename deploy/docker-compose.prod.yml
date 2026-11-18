@@ -55,6 +55,7 @@ services:
       - "127.0.0.1:8000:8000"
     volumes:
       - ../logs:/opt/trillionaire/logs
+      - ../.env:/opt/trillionaire/.env
       - ../research_lab/artifacts:/opt/trillionaire/research_lab/artifacts
       - ../research_lab/data_store:/opt/trillionaire/research_lab/data_store
     depends_on:
@@ -63,7 +64,7 @@ services:
     networks:
       - trillionaire-net
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      test: ["CMD", "curl", "-f", "http://32.236.106.39/api/v1/health"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -80,8 +81,8 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile.dashboard
       args:
-        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
-        - NEXT_PUBLIC_WS_URL=${NEXT_PUBLIC_WS_URL:-ws://localhost:8000/ws/stream}
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://32.236.106.39}
+        - NEXT_PUBLIC_WS_URL=${NEXT_PUBLIC_WS_URL:-ws://32.236.106.39/ws/stream}
         - NEXT_PUBLIC_ADMIN_KEY=${NEXT_PUBLIC_ADMIN_KEY:-trillionaire_super_secret_local_key}
     container_name: trillionaire-dashboard
     restart: always

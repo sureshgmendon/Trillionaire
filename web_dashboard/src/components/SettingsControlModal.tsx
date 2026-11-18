@@ -51,7 +51,7 @@ export const SettingsControlModal: React.FC<SettingsControlModalProps> = ({
   const [confirmLiveMode, setConfirmLiveMode] = useState(false);
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-  const adminKey = process.env.NEXT_PUBLIC_ADMIN_KEY || "trillionaire-dev-secret-key-change-in-prod";
+  const adminKey = "trillionaire-local-admin-123";
 
   // Fetch current runtime settings on modal open
   useEffect(() => {
@@ -378,7 +378,68 @@ export const SettingsControlModal: React.FC<SettingsControlModalProps> = ({
                     )}
                   </div>
 
-                  <div className="text-[11px] text-cockpit-muted leading-relaxed bg-cockpit-surface border border-cockpit-border p-3 rounded-lg flex items-center justify-between">
+                  
+
+        {/* Saved Kite Account Profile Selector */}
+
+        <div className="p-3 rounded-lg bg-slate-900/80 border border-slate-700/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
+
+          <div>
+
+            <div className="text-xs font-semibold text-emerald-400">
+
+              SAVED KITE ACCOUNT PROFILES (.env Vault)
+
+            </div>
+
+            <div className="text-[11px] text-slate-400">
+
+              {currentSettings?.has_kite_key
+
+                ? `Active in Vault: ${currentSettings.kite_user_id || "Not Set"} (${currentSettings.kite_api_key_masked || "****"}) — Leave secret boxes blank to keep saved credentials`
+
+                : "No Kite profile saved yet — enter credentials below"}
+
+            </div>
+
+          </div>
+
+          <select
+
+            value={currentSettings?.has_kite_key ? "saved_default" : "new"}
+
+            onChange={(e) => {
+
+              if (e.target.value === "saved_default") {
+
+                setDataFeeder("ZERODHA_KITE");
+
+              }
+
+            }}
+
+            className="bg-slate-950 border border-slate-700 rounded px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-cyan-500"
+
+          >
+
+            {currentSettings?.has_kite_key && (
+
+              <option value="saved_default">
+
+                ✓ Kite ({currentSettings.kite_user_id || "Saved"}) • {currentSettings.kite_api_key_masked || "****"} [Active]
+
+              </option>
+
+            )}
+
+            <option value="new">+ Enter / Overwrite Kite Credentials</option>
+
+          </select>
+
+        </div>
+
+
+<div className="text-[11px] text-cockpit-muted leading-relaxed bg-cockpit-surface border border-cockpit-border p-3 rounded-lg flex items-center justify-between">
                     <span>
                       Zerodha API Credentials {dataFeeder === "FREE_LIVE" ? "(Optional while Free Live Feed is selected)" : "(Required for LIVE Kite trading)"}. Stored securely in <code className="text-cockpit-blue">.env</code>.
                     </span>

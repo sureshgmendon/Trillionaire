@@ -81,6 +81,81 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
   const mtmPct = allocatedCapital > 0 ? (dailyMtm / allocatedCapital) * 100 : 0;
   const isProfit = dailyMtm >= 0;
 
+  
+
+  const [kiteUserId, setKiteUserId] = React.useState<string>("");
+
+  const [activeFeeder, setActiveFeeder] = React.useState<string>("FREE_LIVE");
+
+  const [togglingFeed, setTogglingFeed] = React.useState(false);
+
+
+
+  React.useEffect(() => {
+
+    fetch("/api/v1/settings", {
+
+      headers: { "X-API-Key": "trillionaire-local-admin-123" },
+
+    })
+
+      .then((r) => (r.ok ? r.json() : null))
+
+      .then((d) => {
+
+        if (d?.kite_user_id) setKiteUserId(d.kite_user_id);
+
+        if (d?.data_feeder) setActiveFeeder(d.data_feeder);
+
+      })
+
+      .catch(() => {});
+
+  }, []);
+
+
+
+  const handleQuickFeedToggle = async () => {
+
+    if (togglingFeed) return;
+
+    setTogglingFeed(true);
+
+    const nextFeeder = activeFeeder === "ZERODHA_KITE" ? "FREE_LIVE" : "ZERODHA_KITE";
+
+    try {
+
+      const res = await fetch("/api/v1/settings", {
+
+        method: "POST",
+
+        headers: {
+
+          "Content-Type": "application/json",
+
+          "X-API-Key": "trillionaire-local-admin-123",
+
+        },
+
+        body: JSON.stringify({ data_feeder: nextFeeder }),
+
+      });
+
+      if (res.ok) setActiveFeeder(nextFeeder);
+
+    } catch (e) {
+
+      console.error("Failed to toggle feed", e);
+
+    } finally {
+
+      setTogglingFeed(false);
+
+    }
+
+  };
+
+
   return (
     <>
       <header className="h-16 bg-cockpit-card border-b border-cockpit-border px-4 flex items-center justify-between select-none">
@@ -158,7 +233,7 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
           <div className="h-3.5 w-px bg-cockpit-border" />
 
           {/* Feeder Pill */}
-          <div className="flex items-center space-x-1.5" title="Active Market Data Feeder Source">
+          <button type="button" onClick={handleQuickFeedToggle} disabled={togglingFeed} title="Click to toggle Free Live NSE Feed / Zerodha Kite WebSocket" className="cursor-pointer hover:brightness-125 transition flex items-center space-x-1.5">
             <Radio className="h-3.5 w-3.5 text-cyan-400" />
             <span
               className={`text-xs font-mono font-semibold px-2 py-0.5 rounded border ${
@@ -167,9 +242,9 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
                   : "bg-cyan-500/10 border-cyan-500/40 text-cyan-400"
               }`}
             >
-              {status?.data_feeder === "ZERODHA_KITE" ? "FEED: KITE" : "FEED: FREE LIVE"}
+              {activeFeeder === "ZERODHA_KITE" ? `FEED: KITE${kiteUserId ? ` (${kiteUserId})` : ""}` : "FEED: FREE LIVE"}
             </span>
-          </div>
+          <span className="ml-1 text-xs opacity-80">⇄</span></button>
 
           <div className="h-3.5 w-px bg-cockpit-border" />
 
