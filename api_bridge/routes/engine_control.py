@@ -76,6 +76,7 @@ async def get_engine_status(engine: TrillionaireEngine = Depends(get_engine)) ->
 
     return {
         "mode": st["trading_mode"],
+        "data_feeder": st.get("data_feeder", "FREE_LIVE"),
         "is_running": st["is_running"],
         "is_booted": st["is_booted"],
         "capital_tier": st["capital_tier"],

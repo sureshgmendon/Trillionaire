@@ -6,15 +6,17 @@ import {
   CheckCircle,
   Key,
   Lock,
+  Radio,
   RefreshCw,
   Save,
   Server,
   Shield,
   Sliders,
+  Wifi,
   X,
   Zap,
 } from "lucide-react";
-import { RuntimeSettings, TradingMode, UpdateSettingsPayload } from "@/types/telemetry";
+import { DataFeederType, RuntimeSettings, TradingMode, UpdateSettingsPayload } from "@/types/telemetry";
 
 interface SettingsControlModalProps {
   isOpen: boolean;
@@ -34,6 +36,7 @@ export const SettingsControlModal: React.FC<SettingsControlModalProps> = ({
 
   // Form State
   const [tradingMode, setTradingMode] = useState<TradingMode>("PAPER");
+  const [dataFeeder, setDataFeeder] = useState<DataFeederType>("FREE_LIVE");
   const [capitalTier, setCapitalTier] = useState<string>("TIER_0_PAPER");
   const [kiteApiKey, setKiteApiKey] = useState("");
   const [kiteApiSecret, setKiteApiSecret] = useState("");
@@ -64,6 +67,7 @@ export const SettingsControlModal: React.FC<SettingsControlModalProps> = ({
           const data: RuntimeSettings = await res.json();
           setCurrentSettings(data);
           setTradingMode(data.trading_mode);
+          setDataFeeder(data.data_feeder || "FREE_LIVE");
           setCapitalTier(data.active_capital_tier);
           setKiteUserId(data.kite_user_id || "");
         } else {
@@ -92,6 +96,7 @@ export const SettingsControlModal: React.FC<SettingsControlModalProps> = ({
 
     const payload: UpdateSettingsPayload = {
       trading_mode: tradingMode,
+      data_feeder: dataFeeder,
       active_capital_tier: capitalTier,
     };
 
@@ -183,11 +188,15 @@ export const SettingsControlModal: React.FC<SettingsControlModalProps> = ({
                 : "border-transparent text-cockpit-muted hover:text-white"
             }`}
           >
-            <Key className="h-3.5 w-3.5" />
-            <span>Zerodha Kite Connect</span>
-            {currentSettings?.has_kite_key && (
+            <Radio className="h-3.5 w-3.5" />
+            <span>Feeder & Broker</span>
+            {dataFeeder === "FREE_LIVE" ? (
+              <span className="text-[9px] px-1 py-0.2 rounded bg-cyan-500/20 text-cyan-400 font-mono">
+                FREE
+              </span>
+            ) : currentSettings?.has_kite_key ? (
               <span className="h-1.5 w-1.5 rounded-full bg-cockpit-green" />
-            )}
+            ) : null}
           </button>
 
           <button
@@ -296,12 +305,88 @@ export const SettingsControlModal: React.FC<SettingsControlModalProps> = ({
                 </div>
               )}
 
-              {/* Tab 2: Zerodha Kite Connect Credentials */}
+              {/* Tab 2: Market Data Feeder & Zerodha Kite Connect */}
               {activeTab === "broker" && (
                 <div className="space-y-4">
-                  <div className="text-[11px] text-cockpit-muted leading-relaxed bg-cockpit-surface border border-cockpit-border p-3 rounded-lg">
-                    Credentials are stored securely in root <code className="text-cockpit-blue">.env</code>.
-                    Leave fields blank to preserve existing configured secrets.
+                  {/* Market Data Feeder Selector Card */}
+                  <div className="bg-cockpit-surface/80 border border-cockpit-borderBright p-4 rounded-xl space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-2">
+                        <Radio className="h-4 w-4 text-cyan-400" />
+                        <span className="text-xs font-bold text-white tracking-wide">MARKET DATA FEEDER</span>
+                      </div>
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-cockpit-surface border border-cockpit-border text-cyan-400 uppercase">
+                        {dataFeeder === "FREE_LIVE" ? "Free Live Feed" : "Kite WebSocket"}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {/* Option 1: FREE_LIVE */}
+                      <div
+                        onClick={() => setDataFeeder("FREE_LIVE")}
+                        className={`p-3 rounded-lg border cursor-pointer transition flex flex-col justify-between ${
+                          dataFeeder === "FREE_LIVE"
+                            ? "bg-cyan-500/10 border-cyan-500/60 shadow-lg shadow-cyan-500/10"
+                            : "bg-cockpit-surface border-cockpit-border hover:border-cockpit-borderBright"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-1.5">
+                          <div className="flex items-center space-x-1.5 font-bold text-xs text-white">
+                            <Wifi className="h-3.5 w-3.5 text-cyan-400" />
+                            <span>Free Live NSE Feed</span>
+                          </div>
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-cockpit-green/20 text-cockpit-green border border-cockpit-green/40 font-mono font-bold">
+                            ₹0 / No Keys
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-cockpit-muted leading-relaxed">
+                          Streams live NSE market prices for Buy/Sell call generation & paper testing without requiring any Zerodha API keys or subscription.
+                        </p>
+                      </div>
+
+                      {/* Option 2: ZERODHA_KITE */}
+                      <div
+                        onClick={() => setDataFeeder("ZERODHA_KITE")}
+                        className={`p-3 rounded-lg border cursor-pointer transition flex flex-col justify-between ${
+                          dataFeeder === "ZERODHA_KITE"
+                            ? "bg-amber-500/10 border-amber-500/60 shadow-lg shadow-amber-500/10"
+                            : "bg-cockpit-surface border-cockpit-border hover:border-cockpit-borderBright"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-1.5">
+                          <div className="flex items-center space-x-1.5 font-bold text-xs text-white">
+                            <Key className="h-3.5 w-3.5 text-amber-400" />
+                            <span>Zerodha Kite Connect</span>
+                          </div>
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/40 font-mono font-bold">
+                            Official WebSocket
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-cockpit-muted leading-relaxed">
+                          Uses official KiteTicker WebSocket feed and enables real-money execution through your authenticated Zerodha trading account.
+                        </p>
+                      </div>
+                    </div>
+
+                    {dataFeeder === "FREE_LIVE" && (
+                      <div className="text-[11px] text-cyan-400/95 bg-cyan-950/40 border border-cyan-800/40 p-2.5 rounded-lg flex items-center space-x-2">
+                        <CheckCircle className="h-4 w-4 flex-shrink-0 text-cyan-400" />
+                        <span>
+                          <b>Safety Active:</b> Free Live Feed selected. Zerodha API keys below are <b>optional</b>. Order execution is automatically safety-locked to PaperBroker.
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="text-[11px] text-cockpit-muted leading-relaxed bg-cockpit-surface border border-cockpit-border p-3 rounded-lg flex items-center justify-between">
+                    <span>
+                      Zerodha API Credentials {dataFeeder === "FREE_LIVE" ? "(Optional while Free Live Feed is selected)" : "(Required for LIVE Kite trading)"}. Stored securely in <code className="text-cockpit-blue">.env</code>.
+                    </span>
+                    {dataFeeder === "FREE_LIVE" && (
+                      <span className="text-[10px] px-2 py-0.5 rounded bg-cockpit-surface border border-cockpit-border text-cockpit-muted uppercase">
+                        Optional
+                      </span>
+                    )}
                   </div>
 
                   {/* KITE_API_KEY */}

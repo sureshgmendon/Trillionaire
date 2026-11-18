@@ -17,7 +17,7 @@ from loguru import logger
 from config.settings import settings
 from sentinel.orchestrator import SentinelOrchestrator
 from shared.constants import IST_TZ
-from shared.enums import TradingMode
+from shared.enums import DataFeederType, TradingMode
 from shared.schemas import Signal
 
 if TYPE_CHECKING:
@@ -32,6 +32,7 @@ from trading_engine.core.event_bus import (
 )
 from trading_engine.data.anomaly_detector import AnomalyDetector
 from trading_engine.data.candle_aggregator import CandleAggregator
+from trading_engine.data.free_live_feeder import FreeLiveMarketFeeder
 from trading_engine.execution.order_manager import OrderManager
 from trading_engine.execution.paper_broker import PaperBroker
 from trading_engine.risk.portfolio_risk import PortfolioRiskGatekeeper
@@ -44,6 +45,7 @@ class TrillionaireEngine:
     def __init__(
         self,
         trading_mode: Optional[TradingMode] = None,
+        data_feeder: Optional[DataFeederType] = None,
         event_bus: Optional[EventBus] = None,
         candle_aggregator: Optional[CandleAggregator] = None,
         anomaly_detector: Optional[AnomalyDetector] = None,
@@ -54,9 +56,12 @@ class TrillionaireEngine:
         broker: Optional[Any] = None,
         auth_manager: Optional[KiteAuthManager] = None,
         instrument_sync: Optional[InstrumentSync] = None,
+        free_feeder: Optional[FreeLiveMarketFeeder] = None,
     ):
         self.trading_mode = trading_mode or settings.trading_mode
+        self.data_feeder = data_feeder or getattr(settings, "data_feeder", DataFeederType.FREE_LIVE)
         self.bus = event_bus or bus
+        self.free_feeder = free_feeder
 
         # 1. Sentinel & Microstructure Guard
         self.sentinel = sentinel_orchestrator or SentinelOrchestrator()
@@ -109,6 +114,13 @@ class TrillionaireEngine:
             risk_gatekeeper=self.risk_gatekeeper,
         )
 
+        self._live_broker = self.broker
+
+        # Safety Lock on initialization:
+        if self.data_feeder == DataFeederType.FREE_LIVE and not isinstance(self.order_manager.broker, PaperBroker):
+            logger.warning("[SAFETY ENFORCED] FREE_LIVE feeder active: Order execution locked to PaperBroker.")
+            self.order_manager.broker = PaperBroker(event_bus=self.bus)
+
         # Attach OrderManager to KiteBroker if live
         if hasattr(self.broker, "set_order_manager") and callable(self.broker.set_order_manager):
             self.broker.set_order_manager(self.order_manager)
@@ -119,7 +131,7 @@ class TrillionaireEngine:
         self.current_trade_date: Optional[date] = None
 
         logger.info(
-            f"TrillionaireEngine initialized [Mode: {self.trading_mode.value}, Tier: {self.risk_gatekeeper.tier_name}]"
+            f"TrillionaireEngine initialized [Mode: {self.trading_mode.value}, Feeder: {self.data_feeder.value}, Tier: {self.risk_gatekeeper.tier_name}]"
         )
 
     async def boot_premarket(self, trade_date: Optional[date] = None) -> Dict[str, Any]:
@@ -135,7 +147,7 @@ class TrillionaireEngine:
         logger.info(f"Booting TrillionaireEngine for trade date: {self.current_trade_date}...")
 
         # 1. Live Authentication & Instrument Master Sync
-        if self.trading_mode == TradingMode.LIVE and self.auth_manager is not None:
+        if self.trading_mode == TradingMode.LIVE and self.data_feeder == DataFeederType.ZERODHA_KITE and self.auth_manager is not None:
             try:
                 self.auth_manager.get_valid_access_token(trade_date=self.current_trade_date)
                 if self.instrument_sync is not None:
@@ -207,7 +219,7 @@ class TrillionaireEngine:
             logger.info(f"[ENGINE ROUTING] Signal {signal.signal_id} on {sym} rejected by risk sizing (Qty=0)")
 
     async def start(self) -> None:
-        """Starts real-time engine operations, activates broker, and subscribes signal router."""
+        """Starts real-time engine operations, activates broker/feeder, and subscribes signal router."""
         if not self.is_booted:
             await self.boot_premarket()
 
@@ -216,11 +228,23 @@ class TrillionaireEngine:
         # Wire reactive signal routing on EventBus
         self.bus.subscribe(SignalEvent, self.on_signal)
 
-        # Start live broker background tasks if supported
-        if hasattr(self.broker, "start") and callable(self.broker.start):
-            await self.broker.start()
+        # Enforce Safety Lock
+        if self.data_feeder == DataFeederType.FREE_LIVE:
+            if not isinstance(self.order_manager.broker, PaperBroker):
+                logger.warning("[SAFETY ENFORCED] FREE_LIVE feeder active: Order execution locked to PaperBroker.")
+                self.order_manager.broker = PaperBroker(event_bus=self.bus)
 
-        logger.info(f"[ENGINE STARTED] TrillionaireEngine running in {self.trading_mode.value} mode")
+            # Start FreeLiveMarketFeeder
+            if self.free_feeder is None:
+                self.free_feeder = FreeLiveMarketFeeder(event_bus=self.bus)
+            await self.free_feeder.start()
+        elif self.data_feeder == DataFeederType.ZERODHA_KITE:
+            if hasattr(self.broker, "start") and callable(self.broker.start):
+                await self.broker.start()
+
+        logger.info(
+            f"[ENGINE STARTED] TrillionaireEngine running [Mode: {self.trading_mode.value}, Feeder: {self.data_feeder.value}]"
+        )
 
     async def stop(self) -> None:
         """Gracefully halts trading operations and flattens any remaining positions."""
@@ -232,7 +256,10 @@ class TrillionaireEngine:
             logger.info("Flattening open positions prior to engine shutdown...")
             await self.order_manager.flatten_all_positions(reason="ENGINE_SHUTDOWN")
 
-        # 2. Stop live broker background tasks if supported
+        # 2. Stop active data feeder
+        if self.free_feeder is not None and self.free_feeder.is_running:
+            await self.free_feeder.stop()
+
         if hasattr(self.broker, "stop") and callable(self.broker.stop):
             await self.broker.stop()
 
@@ -260,12 +287,51 @@ class TrillionaireEngine:
         self.trading_mode = mode
         logger.info(f"[ENGINE MODE UPDATED] Trading mode set to {mode.value}")
 
+    def set_data_feeder(self, feeder_type: DataFeederType) -> None:
+        """Updates market data feeder dynamically and enforces broker safety lock."""
+        prev_feeder = self.data_feeder
+        self.data_feeder = feeder_type
+        logger.info(f"[FEEDER UPDATED] Market data feeder switched from {prev_feeder.value} to {feeder_type.value}")
+
+        # Safety lock enforcement: FREE_LIVE always routes orders through PaperBroker
+        if feeder_type == DataFeederType.FREE_LIVE:
+            if not isinstance(self.order_manager.broker, PaperBroker):
+                logger.warning("[SAFETY ENFORCED] FREE_LIVE feeder active: Order execution locked to PaperBroker.")
+                self.order_manager.broker = PaperBroker(event_bus=self.bus)
+        elif feeder_type == DataFeederType.ZERODHA_KITE and self.trading_mode == TradingMode.LIVE:
+            if self._live_broker is not None and not isinstance(self._live_broker, PaperBroker):
+                self.order_manager.broker = self._live_broker
+                logger.info("[BROKER RESTORED] Restored live KiteBroker order routing.")
+
+        # If engine is actively running, restart data streaming on new feeder
+        if self.is_running:
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self._switch_feeder_runtime(prev_feeder, feeder_type))
+            except RuntimeError:
+                pass
+
+    async def _switch_feeder_runtime(self, old_feeder: DataFeederType, new_feeder: DataFeederType) -> None:
+        """Gracefully transitions live data feeders while engine is active."""
+        if old_feeder == DataFeederType.FREE_LIVE and self.free_feeder is not None:
+            await self.free_feeder.stop()
+        elif old_feeder == DataFeederType.ZERODHA_KITE and hasattr(self.broker, "stop"):
+            await self.broker.stop()
+
+        if new_feeder == DataFeederType.FREE_LIVE:
+            if self.free_feeder is None:
+                self.free_feeder = FreeLiveMarketFeeder(event_bus=self.bus)
+            await self.free_feeder.start()
+        elif new_feeder == DataFeederType.ZERODHA_KITE and hasattr(self.broker, "start"):
+            await self.broker.start()
+
     def get_status(self) -> Dict[str, Any]:
         """Returns comprehensive diagnostic and operational metrics snapshot."""
         return {
             "is_running": self.is_running,
             "is_booted": self.is_booted,
             "trading_mode": self.trading_mode.value,
+            "data_feeder": self.data_feeder.value,
             "current_trade_date": self.current_trade_date.isoformat() if self.current_trade_date else None,
             "capital_tier": self.risk_gatekeeper.tier_name,
             "allocated_capital": self.risk_gatekeeper.allocated_capital,

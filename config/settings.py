@@ -11,7 +11,7 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from shared.constants import IST_TZ
-from shared.enums import TradingMode
+from shared.enums import DataFeederType, TradingMode
 from shared.exceptions import ConfigurationError
 
 CONFIG_DIR = Path(__file__).parent.resolve()
@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     app_name: str = Field(default="Trillionaire Algo Engine", description="Application display name")
     environment: str = Field(default="development", description="Environment: development, staging, production")
     trading_mode: TradingMode = Field(default=TradingMode.PAPER, description="PAPER, LIVE, or REPLAY")
+    data_feeder: DataFeederType = Field(
+        default=DataFeederType.FREE_LIVE,
+        description="Market data feeder: FREE_LIVE (₹0 Yahoo/NSE Live Quotes) or ZERODHA_KITE",
+    )
     active_capital_tier: str = Field(default="TIER_0_PAPER", description="Key for active tier in capital_tiers.yaml")
 
     # Zerodha Kite Connect Credentials

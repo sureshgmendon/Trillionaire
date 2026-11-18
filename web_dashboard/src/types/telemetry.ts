@@ -5,6 +5,8 @@
 
 export type TradingMode = "PAPER" | "LIVE" | "REPLAY";
 
+export type DataFeederType = "FREE_LIVE" | "ZERODHA_KITE";
+
 export type ClusterRegime =
   | "TREND_MOMENTUM"
   | "MEAN_REVERSION"
@@ -140,6 +142,7 @@ export interface FunnelMetrics {
 
 export interface EngineStatus {
   mode: TradingMode;
+  data_feeder?: DataFeederType;
   is_running: boolean;
   is_booted: boolean;
   capital_tier: string;
@@ -165,6 +168,7 @@ export interface RuntimeSettings {
   has_gemini_key: boolean;
   has_telegram: boolean;
   trading_mode: TradingMode;
+  data_feeder: DataFeederType;
   active_capital_tier: string;
   allocated_capital: number;
   available_capital_tiers: string[];
@@ -183,6 +187,7 @@ export interface UpdateSettingsPayload {
   telegram_bot_token?: string;
   telegram_chat_id?: string;
   trading_mode?: TradingMode;
+  data_feeder?: DataFeederType;
   active_capital_tier?: string;
 }
 

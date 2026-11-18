@@ -7,6 +7,7 @@ import {
   Clock,
   Play,
   Power,
+  Radio,
   RefreshCw,
   Shield,
   Sliders,
@@ -151,6 +152,22 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
               }`}
             >
               {status?.mode || "PAPER"}
+            </span>
+          </div>
+
+          <div className="h-3.5 w-px bg-cockpit-border" />
+
+          {/* Feeder Pill */}
+          <div className="flex items-center space-x-1.5" title="Active Market Data Feeder Source">
+            <Radio className="h-3.5 w-3.5 text-cyan-400" />
+            <span
+              className={`text-xs font-mono font-semibold px-2 py-0.5 rounded border ${
+                status?.data_feeder === "ZERODHA_KITE"
+                  ? "bg-amber-500/10 border-amber-500/40 text-amber-400"
+                  : "bg-cyan-500/10 border-cyan-500/40 text-cyan-400"
+              }`}
+            >
+              {status?.data_feeder === "ZERODHA_KITE" ? "FEED: KITE" : "FEED: FREE LIVE"}
             </span>
           </div>
 

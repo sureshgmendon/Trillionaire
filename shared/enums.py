@@ -13,6 +13,12 @@ class TradingMode(str, Enum):
     REPLAY = "REPLAY"
 
 
+class DataFeederType(str, Enum):
+    """Market data feeder source."""
+    FREE_LIVE = "FREE_LIVE"
+    ZERODHA_KITE = "ZERODHA_KITE"
+
+
 class ClusterRegime(str, Enum):
     """Statistical cluster classification regime for stock behavior."""
     TREND_MOMENTUM = "TREND_MOMENTUM"

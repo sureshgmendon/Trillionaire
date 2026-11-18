@@ -13,7 +13,7 @@ from loguru import logger
 from api_bridge.routes.engine_control import get_engine, verify_admin_api_key
 from config.settings import persist_env_updates, reload_settings_from_env, settings
 from shared.constants import IST_TZ
-from shared.enums import TradingMode
+from shared.enums import DataFeederType, TradingMode
 from trading_engine.core.engine import TrillionaireEngine
 
 router = APIRouter(prefix="", tags=["Settings & Lifecycle Control"])
@@ -52,6 +52,7 @@ class UpdateSettingsRequest(BaseModel):
     telegram_bot_token: Optional[str] = Field(default=None, description="Telegram Bot API Token")
     telegram_chat_id: Optional[str] = Field(default=None, description="Telegram Chat ID")
     trading_mode: Optional[TradingMode] = Field(default=None, description="REPLAY, PAPER, or LIVE")
+    data_feeder: Optional[DataFeederType] = Field(default=None, description="FREE_LIVE or ZERODHA_KITE")
     active_capital_tier: Optional[str] = Field(default=None, description="Tier key in capital_tiers.yaml")
 
 
@@ -77,6 +78,7 @@ async def get_runtime_settings(engine: TrillionaireEngine = Depends(get_engine))
         "has_gemini_key": is_credential_configured(settings.gemini_api_key),
         "has_telegram": is_credential_configured(settings.telegram_bot_token) and is_credential_configured(settings.telegram_chat_id),
         "trading_mode": engine.trading_mode.value,
+        "data_feeder": engine.data_feeder.value,
         "active_capital_tier": engine.risk_gatekeeper.tier_name,
         "allocated_capital": engine.risk_gatekeeper.allocated_capital,
         "available_capital_tiers": available_tiers,
@@ -107,6 +109,8 @@ async def update_runtime_settings(
                     updates[field_name] = cleaned
             elif isinstance(value, TradingMode):
                 updates[field_name] = value.value
+            elif isinstance(value, DataFeederType):
+                updates[field_name] = value.value
             else:
                 updates[field_name] = value
 
@@ -127,6 +131,11 @@ async def update_runtime_settings(
         if "trading_mode" in updates:
             new_mode = TradingMode(updates["trading_mode"])
             engine.set_trading_mode(new_mode)
+
+        # 5. Update data feeder on engine if updated
+        if "data_feeder" in updates:
+            new_feeder = DataFeederType(updates["data_feeder"])
+            engine.set_data_feeder(new_feeder)
 
     # Return refreshed settings
     return {

@@ -1,6 +1,6 @@
 {
   "date": "2026-03-10",
-  "updated_at_ist": "2026-11-17T17:29:35.101008+05:30",
+  "updated_at_ist": "2026-11-18T13:38:51.491061+05:30",
   "summary": {
     "total_monitored": 100,
     "normal_count": 100,
@@ -13,700 +13,700 @@
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "ICICIBANK": {
       "tradingsymbol": "ICICIBANK",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "SBIN": {
       "tradingsymbol": "SBIN",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "KOTAKBANK": {
       "tradingsymbol": "KOTAKBANK",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "AXISBANK": {
       "tradingsymbol": "AXISBANK",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "INDUSINDBK": {
       "tradingsymbol": "INDUSINDBK",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "BANKBARODA": {
       "tradingsymbol": "BANKBARODA",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "PNB": {
       "tradingsymbol": "PNB",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "FEDERALBNK": {
       "tradingsymbol": "FEDERALBNK",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "IDFCFIRSTB": {
       "tradingsymbol": "IDFCFIRSTB",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "AUBANK": {
       "tradingsymbol": "AUBANK",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "BANDHANBNK": {
       "tradingsymbol": "BANDHANBNK",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "CANBK": {
       "tradingsymbol": "CANBK",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "UNIONBANK": {
       "tradingsymbol": "UNIONBANK",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "TCS": {
       "tradingsymbol": "TCS",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "INFY": {
       "tradingsymbol": "INFY",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "HCLTECH": {
       "tradingsymbol": "HCLTECH",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "WIPRO": {
       "tradingsymbol": "WIPRO",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "TECHM": {
       "tradingsymbol": "TECHM",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "LTIM": {
       "tradingsymbol": "LTIM",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "PERSISTENT": {
       "tradingsymbol": "PERSISTENT",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "COFORGE": {
       "tradingsymbol": "COFORGE",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "MPHASIS": {
       "tradingsymbol": "MPHASIS",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "LTTS": {
       "tradingsymbol": "LTTS",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "TATAMOTORS": {
       "tradingsymbol": "TATAMOTORS",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "M&M": {
       "tradingsymbol": "M&M",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "MARUTI": {
       "tradingsymbol": "MARUTI",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "BAJAJ-AUTO": {
       "tradingsymbol": "BAJAJ-AUTO",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "EICHERMOT": {
       "tradingsymbol": "EICHERMOT",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "HEROMOTOCO": {
       "tradingsymbol": "HEROMOTOCO",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "TVSMOTOR": {
       "tradingsymbol": "TVSMOTOR",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "BHARATFORG": {
       "tradingsymbol": "BHARATFORG",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "MOTHERSON": {
       "tradingsymbol": "MOTHERSON",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "BALKRISIND": {
       "tradingsymbol": "BALKRISIND",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "ASHOKLEY": {
       "tradingsymbol": "ASHOKLEY",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "BOSCHLTD": {
       "tradingsymbol": "BOSCHLTD",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "MRF": {
       "tradingsymbol": "MRF",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "SUNPHARMA": {
       "tradingsymbol": "SUNPHARMA",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "DRREDDY": {
       "tradingsymbol": "DRREDDY",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "CIPLA": {
       "tradingsymbol": "CIPLA",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "DIVISLAB": {
       "tradingsymbol": "DIVISLAB",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "APOLLOHOSP": {
       "tradingsymbol": "APOLLOHOSP",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "LUPIN": {
       "tradingsymbol": "LUPIN",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "TORNTPHARM": {
       "tradingsymbol": "TORNTPHARM",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "ZYDUSLIFE": {
       "tradingsymbol": "ZYDUSLIFE",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "AUROPHARMA": {
       "tradingsymbol": "AUROPHARMA",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "ALKEM": {
       "tradingsymbol": "ALKEM",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "BIOCON": {
       "tradingsymbol": "BIOCON",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "GLENMARK": {
       "tradingsymbol": "GLENMARK",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "MAXHEALTH": {
       "tradingsymbol": "MAXHEALTH",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "RELIANCE": {
       "tradingsymbol": "RELIANCE",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "NTPC": {
       "tradingsymbol": "NTPC",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "POWERGRID": {
       "tradingsymbol": "POWERGRID",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "ONGC": {
       "tradingsymbol": "ONGC",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "BPCL": {
       "tradingsymbol": "BPCL",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "COALINDIA": {
       "tradingsymbol": "COALINDIA",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "IOC": {
       "tradingsymbol": "IOC",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "TATAPOWER": {
       "tradingsymbol": "TATAPOWER",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "ADANIGREEN": {
       "tradingsymbol": "ADANIGREEN",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "ADANIPOWER": {
       "tradingsymbol": "ADANIPOWER",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "GAIL": {
       "tradingsymbol": "GAIL",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "OIL": {
       "tradingsymbol": "OIL",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "PETRONET": {
       "tradingsymbol": "PETRONET",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "NHPC": {
       "tradingsymbol": "NHPC",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "ITC": {
       "tradingsymbol": "ITC",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "HINDUNILVR": {
       "tradingsymbol": "HINDUNILVR",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "NESTLEIND": {
       "tradingsymbol": "NESTLEIND",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "BRITANNIA": {
       "tradingsymbol": "BRITANNIA",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "TATACONSUM": {
       "tradingsymbol": "TATACONSUM",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "DABUR": {
       "tradingsymbol": "DABUR",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "GODREJCP": {
       "tradingsymbol": "GODREJCP",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "MARICO": {
       "tradingsymbol": "MARICO",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "VBL": {
       "tradingsymbol": "VBL",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "COLPAL": {
       "tradingsymbol": "COLPAL",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "MCDOWELL-N": {
       "tradingsymbol": "MCDOWELL-N",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "PGHH": {
       "tradingsymbol": "PGHH",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "TATASTEEL": {
       "tradingsymbol": "TATASTEEL",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "JSWSTEEL": {
       "tradingsymbol": "JSWSTEEL",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "HINDALCO": {
       "tradingsymbol": "HINDALCO",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "VEDL": {
       "tradingsymbol": "VEDL",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "JINDALSTEL": {
       "tradingsymbol": "JINDALSTEL",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "NMDC": {
       "tradingsymbol": "NMDC",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "SAIL": {
       "tradingsymbol": "SAIL",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "NATIONALUM": {
       "tradingsymbol": "NATIONALUM",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "HINDZINC": {
       "tradingsymbol": "HINDZINC",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "LT": {
       "tradingsymbol": "LT",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "BHARTIARTL": {
       "tradingsymbol": "BHARTIARTL",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "BAJFINANCE": {
       "tradingsymbol": "BAJFINANCE",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "BAJAJFINSV": {
       "tradingsymbol": "BAJAJFINSV",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "TITAN": {
       "tradingsymbol": "TITAN",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "ASIANPAINT": {
       "tradingsymbol": "ASIANPAINT",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "ULTRACEMCO": {
       "tradingsymbol": "ULTRACEMCO",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "GRASIM": {
       "tradingsymbol": "GRASIM",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "ADANIENT": {
       "tradingsymbol": "ADANIENT",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "ADANIPORTS": {
       "tradingsymbol": "ADANIPORTS",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "SBILIFE": {
       "tradingsymbol": "SBILIFE",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "HDFCLIFE": {
       "tradingsymbol": "HDFCLIFE",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "SHREECEM": {
       "tradingsymbol": "SHREECEM",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "SIEMENS": {
       "tradingsymbol": "SIEMENS",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     },
     "BEL": {
       "tradingsymbol": "BEL",
       "status": "NORMAL",
       "reason": "NORMAL: No scheduled event blackout and neutral pre-market news.",
       "risk_multiplier": 1.0,
-      "updated_at_ist": "2026-11-17T17:29:35.062457+05:30"
+      "updated_at_ist": "2026-11-18T13:38:51.454264+05:30"
     }
   }
 }
