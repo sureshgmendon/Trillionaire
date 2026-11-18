@@ -20,8 +20,9 @@ from shared.constants import IST_TZ
 from shared.enums import DataFeederType, TradingMode
 from shared.schemas import Signal
 
-if TYPE_CHECKING:
-    from trading_engine.brokers.kite.auth import KiteAuthManager
+from trading_engine.brokers.kite.auth import KiteAuthManager
+
+if True:
     from trading_engine.brokers.kite.instruments import InstrumentSync
     from trading_engine.brokers.kite.kite_broker import KiteBroker
 
