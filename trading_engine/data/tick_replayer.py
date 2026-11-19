@@ -7,7 +7,7 @@ chronologically onto the EventBus at configurable speeds (1x, 10x, 50x, MAX_SPEE
 import asyncio
 import os
 import tempfile
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from loguru import logger
@@ -79,6 +79,85 @@ class HistoricalTickReplayer:
                 return c
         return self.data_dir / f"{clean}_1m.parquet"
 
+    def _load_and_standardize_parquet(
+        self,
+        path: Path,
+        fallback_date: Optional[date] = None,
+    ) -> pl.DataFrame:
+        """
+        Loads a Parquet file and standardizes column names and timestamps:
+        1. If 'timestamp' is missing, checks for 'timestamp_ist', 'datetime', 'date', 'Date', 'Timestamp'.
+        2. If no timestamp column exists, synthesizes sequential 1-minute market timestamps
+           (09:15 to 15:29 IST) from row count.
+        3. Ensures 'timestamp' is a valid IST-aware Datetime.
+        """
+        df = pl.read_parquet(path)
+        if len(df) == 0:
+            return df
+
+        # 1. Check for timestamp aliases if 'timestamp' is not present
+        if "timestamp" not in df.columns:
+            for cand in ["timestamp_ist", "datetime", "date", "Date", "Timestamp"]:
+                if cand in df.columns:
+                    df = df.rename({cand: "timestamp"})
+                    break
+
+        n = len(df)
+
+        # 2. If still no timestamp column, synthesize sequential 1-minute market timestamps (09:15 to 15:29 IST)
+        if "timestamp" not in df.columns:
+            target_date = fallback_date or date.today()
+            while target_date.weekday() >= 5:  # Skip Saturday/Sunday
+                target_date -= timedelta(days=1)
+
+            # Generate required trading days (09:15 to 15:29 = 375 minutes per day)
+            days_needed = max(1, (n + 374) // 375)
+            trading_days: List[date] = []
+            curr = target_date
+            while len(trading_days) < days_needed:
+                if curr.weekday() < 5:
+                    trading_days.append(curr)
+                curr -= timedelta(days=1)
+            trading_days.reverse()
+
+            market_timestamps: List[datetime] = []
+            for d in trading_days:
+                base_dt = datetime.combine(d, time(9, 15), tzinfo=IST_TZ)
+                for m in range(375):
+                    market_timestamps.append(base_dt + timedelta(minutes=m))
+
+            if n <= 375:
+                base_dt = datetime.combine(target_date, time(9, 15), tzinfo=IST_TZ)
+                synth_ts = [base_dt + timedelta(minutes=m) for m in range(n)]
+            else:
+                synth_ts = market_timestamps[-n:]
+
+            df = df.with_columns(pl.Series("timestamp", synth_ts))
+
+        # 3. Standardize timestamp column to IST Datetime
+        ts_col = df["timestamp"]
+        if ts_col.dtype.is_temporal():
+            if getattr(ts_col.dtype, "time_zone", None) is None:
+                df = df.with_columns(pl.col("timestamp").dt.replace_time_zone("Asia/Kolkata"))
+            else:
+                df = df.with_columns(pl.col("timestamp").dt.convert_time_zone("Asia/Kolkata"))
+        elif ts_col.dtype in (pl.Utf8, pl.String):
+            parsed_dts: List[datetime] = []
+            ref_dt = datetime.combine(fallback_date or date.today(), time(9, 15), tzinfo=IST_TZ)
+            for idx, val in enumerate(ts_col):
+                if val is None:
+                    parsed_dts.append(ref_dt + timedelta(minutes=idx))
+                    continue
+                try:
+                    p = datetime.fromisoformat(str(val).strip())
+                    p_ist = p.astimezone(IST_TZ) if p.tzinfo else p.replace(tzinfo=IST_TZ)
+                    parsed_dts.append(p_ist)
+                except Exception:
+                    parsed_dts.append(ref_dt + timedelta(minutes=idx))
+            df = df.with_columns(pl.Series("timestamp", parsed_dts))
+
+        return df
+
     def synthesize_ticks_for_bar(
         self,
         symbol: str,
@@ -90,11 +169,17 @@ class HistoricalTickReplayer:
         Synthesizes 4 realistic intra-minute ticks from an OHLCV bar:
         Open -> Extremum 1 -> Extremum 2 -> Close with realistic bid/ask spread.
         """
-        dt: datetime = bar["timestamp"]
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=IST_TZ)
+        raw_dt = bar.get("timestamp")
+        if isinstance(raw_dt, datetime):
+            dt = raw_dt.astimezone(IST_TZ) if raw_dt.tzinfo else raw_dt.replace(tzinfo=IST_TZ)
+        elif isinstance(raw_dt, str):
+            try:
+                parsed = datetime.fromisoformat(raw_dt)
+                dt = parsed.astimezone(IST_TZ) if parsed.tzinfo else parsed.replace(tzinfo=IST_TZ)
+            except Exception:
+                dt = datetime.now(IST_TZ)
         else:
-            dt = dt.astimezone(IST_TZ)
+            dt = datetime.now(IST_TZ)
 
         open_p = bar["open"]
         high_p = bar["high"]
@@ -178,8 +263,8 @@ class HistoricalTickReplayer:
                 p_path = self._get_parquet_path(sym)
                 if p_path.exists():
                     try:
-                        sample_df = pl.read_parquet(p_path)
-                        if len(sample_df) > 0:
+                        sample_df = self._load_and_standardize_parquet(p_path)
+                        if len(sample_df) > 0 and "timestamp" in sample_df.columns:
                             effective_date = sample_df["timestamp"][-1].date()
                             break
                     except Exception:
@@ -195,9 +280,16 @@ class HistoricalTickReplayer:
                 logger.warning(f"Parquet missing for {sym} at {p_path}. Skipping.")
                 continue
 
-            df = pl.read_parquet(p_path).sort("timestamp")
+            try:
+                df = self._load_and_standardize_parquet(p_path, fallback_date=effective_date)
+            except Exception as e:
+                logger.warning(f"Failed to load/standardize parquet for {sym} at {p_path}: {e}. Skipping.")
+                continue
+
             if len(df) == 0:
                 continue
+
+            df = df.sort("timestamp")
 
             # Filter for specific date if provided or resolved
             if effective_date is not None:

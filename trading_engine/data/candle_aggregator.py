@@ -298,14 +298,29 @@ class CandleAggregator:
                                 h_list = quote.get("high", [])
                                 l_list = quote.get("low", [])
                                 v_list = quote.get("volume", [])
+                                o_list = quote.get("open", [])
 
                                 parsed_bars = []
                                 for i in range(len(timestamps)):
                                     if i < len(c_list) and c_list[i] is not None:
+                                        ts_val = timestamps[i]
+                                        bar_dt = (
+                                            datetime.fromtimestamp(ts_val, tz=IST_TZ)
+                                            if isinstance(ts_val, (int, float))
+                                            else datetime.now(IST_TZ)
+                                        )
+                                        op = (
+                                            float(o_list[i])
+                                            if o_list and i < len(o_list) and o_list[i] is not None
+                                            else float(c_list[i])
+                                        )
                                         parsed_bars.append({
+                                            "timestamp": bar_dt,
+                                            "date": bar_dt,
+                                            "open": op,
                                             "close": float(c_list[i]),
-                                            "high": float(h_list[i] if i < len(h_list) and h_list[i] is not None else c_list[i]),
-                                            "low": float(l_list[i] if i < len(l_list) and l_list[i] is not None else c_list[i]),
+                                            "high": float(h_list[i] if i < len(h_list) and h_list[i] is not None else max(op, float(c_list[i]))),
+                                            "low": float(l_list[i] if i < len(l_list) and l_list[i] is not None else min(op, float(c_list[i]))),
                                             "volume": int(v_list[i] if i < len(v_list) and v_list[i] is not None else 1),
                                         })
                                 if parsed_bars:
@@ -369,23 +384,42 @@ class CandleAggregator:
                 try:
                     opens = [float(b.get("open", b["close"])) for b in bars]
                     clean_sym = sym.replace(":", "_").replace(" ", "_")
+
+                    bar_timestamps: List[datetime] = []
+                    ref_end = datetime.now(IST_TZ).replace(second=0, microsecond=0)
+                    for idx, b in enumerate(bars):
+                        raw_ts = b.get("timestamp") or b.get("date") or b.get("datetime") or b.get("timestamp_ist")
+                        if isinstance(raw_ts, datetime):
+                            ts_dt = raw_ts.astimezone(IST_TZ) if raw_ts.tzinfo else raw_ts.replace(tzinfo=IST_TZ)
+                        elif isinstance(raw_ts, (int, float)):
+                            ts_dt = datetime.fromtimestamp(raw_ts, tz=IST_TZ)
+                        elif isinstance(raw_ts, str):
+                            try:
+                                parsed = datetime.fromisoformat(raw_ts)
+                                ts_dt = parsed.astimezone(IST_TZ) if parsed.tzinfo else parsed.replace(tzinfo=IST_TZ)
+                            except Exception:
+                                ts_dt = ref_end - timedelta(minutes=5 * (n - 1 - idx))
+                        else:
+                            ts_dt = ref_end - timedelta(minutes=5 * (n - 1 - idx))
+                        bar_timestamps.append(ts_dt)
+
                     df = pl.DataFrame(
                         {
+                            "timestamp": bar_timestamps,
                             "open": opens,
                             "high": [float(h) for h in highs],
                             "low": [float(l) for l in lows],
                             "close": [float(c) for c in closes],
                             "volume": [int(v) for v in volumes],
                         },
-                        schema={
-                            "open": pl.Float64,
-                            "high": pl.Float64,
-                            "low": pl.Float64,
-                            "close": pl.Float64,
-                            "volume": pl.Int64,
-                        },
                         strict=False,
-                    )
+                    ).with_columns([
+                        pl.col("open").cast(pl.Float64),
+                        pl.col("high").cast(pl.Float64),
+                        pl.col("low").cast(pl.Float64),
+                        pl.col("close").cast(pl.Float64),
+                        pl.col("volume").cast(pl.Int64),
+                    ])
                     parquet_target = store_path / f"{clean_sym}_1m.parquet"
                     df.write_parquet(parquet_target)
                 except Exception as e:

@@ -605,8 +605,69 @@ def test_warmup_from_live_history_persists_decimal_index_parquet(tmp_path: Path)
     assert target_parquet.exists()
     df = pl.read_parquet(target_parquet)
     assert len(df) == 2
+    assert "timestamp" in df.columns
     assert df["close"].dtype == pl.Float64
     assert df["volume"].dtype == pl.Int64
     assert df["close"][0] == 12750.30
+
+
+@pytest.mark.asyncio
+async def test_tick_replayer_resilient_to_missing_and_variant_timestamp_columns(tmp_path: Path):
+    """
+    Verifies that TickReplayer handles:
+    1. Parquet files with only ["open", "high", "low", "close", "volume"] (no timestamp).
+    2. Parquet files with alternative timestamp columns like ["timestamp_ist"].
+    Synthesizes market timestamps and replays ticks cleanly without ColumnNotFoundError.
+    """
+    import polars as pl
+    from trading_engine.core.event_bus import TickEvent
+    from trading_engine.data.tick_replayer import HistoricalTickReplayer
+
+    bus = EventBus()
+    published_ticks = []
+
+    async def record_tick(event):
+        published_ticks.append(event.tick)
+
+    bus.subscribe(TickEvent, record_tick)
+
+    # 1. Parquet with NO timestamp column at all (only OHLCV)
+    reliance_path = tmp_path / "RELIANCE_1m.parquet"
+    df_no_ts = pl.DataFrame({
+        "open": [2500.0, 2505.0, 2502.0],
+        "high": [2510.0, 2512.0, 2508.0],
+        "low": [2498.0, 2501.0, 2500.0],
+        "close": [2505.0, 2503.0, 2507.0],
+        "volume": [10000, 15000, 12000],
+    })
+    df_no_ts.write_parquet(reliance_path)
+
+    # 2. Parquet with 'timestamp_ist' column (RELIANCE parent index is NIFTY ENERGY)
+    nifty_path = tmp_path / "NIFTY_ENERGY_1m.parquet"
+    df_with_ist = pl.DataFrame({
+        "timestamp_ist": [
+            datetime.now(IST_TZ).replace(hour=9, minute=15, second=0, microsecond=0),
+            datetime.now(IST_TZ).replace(hour=9, minute=16, second=0, microsecond=0),
+            datetime.now(IST_TZ).replace(hour=9, minute=17, second=0, microsecond=0),
+        ],
+        "open": [24000.0, 24010.0, 24005.0],
+        "high": [24020.0, 24025.0, 24015.0],
+        "low": [23990.0, 24000.0, 23995.0],
+        "close": [24010.0, 24008.0, 24012.0],
+        "volume": [50000, 48000, 52000],
+    })
+    df_with_ist.write_parquet(nifty_path)
+
+    replayer = HistoricalTickReplayer(event_bus=bus, data_dir=tmp_path)
+    total_ticks = await replayer.replay_session(symbols=["RELIANCE"], speed="MAX_SPEED")
+
+    assert total_ticks > 0
+    assert len(published_ticks) == total_ticks
+    # RELIANCE has 3 bars -> 3 * 4 ticks = 12 ticks; NIFTY 50 parent index has 3 bars -> 12 ticks
+    assert total_ticks == 24
+    for t in published_ticks:
+        assert t.ltp > 0
+        assert t.timestamp_ist is not None
+        assert t.timestamp_ist.tzinfo is not None
 
 
