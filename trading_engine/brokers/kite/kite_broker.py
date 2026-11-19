@@ -308,6 +308,9 @@ class KiteBroker:
         if self.order_manager is None:
             return {"status": "skipped", "reason": "No OrderManager attached"}
 
+        if self.kite is None:
+            return {"status": "skipped", "reason": "No Kite client attached"}
+
         try:
             broker_pos_data = self.kite.positions()
             net_positions = broker_pos_data.get("net", [])
@@ -417,6 +420,17 @@ class KiteBroker:
         # Start reconciler loop
         self._reconciler_task = asyncio.create_task(self._reconciler_loop())
 
+    def subscribe_tokens(self, tokens: List[int]) -> None:
+        """Updates subscription token list and subscribes on active ticker if connected."""
+        self.tokens_to_subscribe = sorted(list(set(self.tokens_to_subscribe + tokens)))
+        if self.ticker is not None and getattr(self.ticker, "is_connected", lambda: False)():
+            try:
+                self.ticker.subscribe(tokens)
+                self.ticker.set_mode(getattr(self.ticker, "MODE_FULL", "full"), tokens)
+                logger.info(f"[KITE TICKER] Subscribed to {len(tokens)} additional tokens.")
+            except Exception as e:
+                logger.warning(f"[KITE TICKER] Failed to subscribe additional tokens: {e}")
+
     async def stop(self) -> None:
         """Stops reconciler task and closes ticker connection."""
         self._is_running = False
@@ -424,9 +438,16 @@ class KiteBroker:
         if self._reconciler_task and not self._reconciler_task.done():
             self._reconciler_task.cancel()
             try:
-                await self._reconciler_task
-            except asyncio.CancelledError:
+                try:
+                    current_loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    current_loop = None
+
+                if current_loop is not None and self._reconciler_task.get_loop() is current_loop:
+                    await self._reconciler_task
+            except (asyncio.CancelledError, RuntimeError):
                 pass
+            self._reconciler_task = None
 
         if self.ticker is not None:
             try:

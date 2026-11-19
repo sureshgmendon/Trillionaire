@@ -14,10 +14,12 @@ import pytest
 import pyotp
 import httpx
 import uuid
+from unittest.mock import MagicMock
 
 from shared.constants import IST_TZ
 from shared.enums import (
     ClusterRegime,
+    DataFeederType,
     OrderStatus,
     OrderType,
     Side,
@@ -461,3 +463,184 @@ async def test_trillionaire_engine_lifecycle_paper_mode():
     await engine.stop()
     assert engine.is_running is False
     assert len(engine.order_manager.open_positions) == 0
+
+
+@pytest.mark.asyncio
+async def test_trillionaire_engine_lifecycle_zerodha_kite_feeder_paper_mode(tmp_path: Path):
+    """
+    Verifies that TrillionaireEngine in PAPER mode with DataFeederType.ZERODHA_KITE:
+    1. Authenticates synchronously via KiteAuthManager during boot_premarket.
+    2. Assigns kite_client to InstrumentSync before syncing instruments.
+    3. Resolves all active stock tokens + parent sector index tokens.
+    4. Populates tokens_to_subscribe on KiteBroker.
+    5. Starts KiteBroker and ticker connection on engine.start().
+    6. Stops KiteBroker and reconciler loop cleanly on engine.stop().
+    """
+    bus = EventBus()
+
+    # 1. Mock KiteConnect client & KiteTicker
+    mock_kite = MagicMock()
+    mock_kite.positions.return_value = {"net": []}
+    mock_kite.instruments.return_value = [
+        {"tradingsymbol": "RELIANCE", "instrument_token": 738561, "instrument_type": "EQ", "segment": "NSE", "tick_size": 0.05, "lot_size": 1},
+        {"tradingsymbol": "NIFTY ENERGY", "instrument_token": 256265, "instrument_type": "INDEX", "segment": "INDICES", "tick_size": 0.05, "lot_size": 1},
+        {"tradingsymbol": "TCS", "instrument_token": 2953217, "instrument_type": "EQ", "segment": "NSE", "tick_size": 0.05, "lot_size": 1},
+        {"tradingsymbol": "NIFTY IT", "instrument_token": 257289, "instrument_type": "INDEX", "segment": "INDICES", "tick_size": 0.05, "lot_size": 1},
+    ]
+
+    mock_ticker = MagicMock()
+    mock_ticker.connect = MagicMock()
+    mock_ticker.close = MagicMock()
+    mock_ticker.subscribe = MagicMock()
+    mock_ticker.set_mode = MagicMock()
+
+    # 2. Mock KiteAuthManager
+    mock_auth = MagicMock(spec=KiteAuthManager)
+    mock_auth.get_valid_access_token.return_value = "mock_access_token_12345"
+    mock_auth.get_kite_client.return_value = mock_kite
+
+    # 3. Setup InstrumentSync with cache path
+    cache_file = tmp_path / "test_instruments.json"
+    instrument_sync = InstrumentSync(kite_client=None, cache_path=cache_file)
+
+    # 4. Strategy runner with active profiles
+    strategy_runner = LiveStrategyRunner(event_bus=bus)
+    profile_reliance = StockProfile(
+        tradingsymbol="RELIANCE",
+        instrument_token=738561,
+        parent_index="NIFTY ENERGY",
+        index_token=256265,
+        cluster_regime=ClusterRegime.TREND_MOMENTUM,
+        beta_5y=1.1,
+        adr_pct=2.5,
+        atr_multiplier_sl=1.5,
+        atr_multiplier_tp=3.0,
+        min_rvol_threshold=1.5,
+        oos_sharpe=1.6,
+        oos_profit_factor=1.8,
+        is_active=True,
+    )
+    profile_tcs = StockProfile(
+        tradingsymbol="TCS",
+        instrument_token=2953217,
+        parent_index="NIFTY IT",
+        index_token=257289,
+        cluster_regime=ClusterRegime.HIGH_RVOL_BREAKOUT,
+        beta_5y=0.8,
+        adr_pct=2.0,
+        atr_multiplier_sl=1.5,
+        atr_multiplier_tp=3.0,
+        min_rvol_threshold=1.5,
+        oos_sharpe=1.7,
+        oos_profit_factor=1.9,
+        is_active=True,
+    )
+    strategy_runner._set_profiles([profile_reliance, profile_tcs])
+
+    # 5. Create KiteBroker
+    kite_broker = KiteBroker(
+        kite_client=mock_kite,
+        ticker_client=mock_ticker,
+        event_bus=bus,
+        instrument_sync=instrument_sync,
+    )
+
+    engine = TrillionaireEngine(
+        trading_mode=TradingMode.PAPER,
+        data_feeder=DataFeederType.ZERODHA_KITE,
+        event_bus=bus,
+        broker=kite_broker,
+        auth_manager=mock_auth,
+        instrument_sync=instrument_sync,
+        strategy_runner=strategy_runner,
+    )
+
+    # 6. Premarket Boot
+    test_date = date(2026, 3, 10)
+    boot_res = await engine.boot_premarket(trade_date=test_date)
+    assert boot_res["status"] == "booted"
+    mock_auth.get_valid_access_token.assert_called_once_with(trade_date=test_date)
+    assert instrument_sync.kite is mock_kite
+    assert instrument_sync.get_token("RELIANCE") == 738561
+    assert instrument_sync.get_token("NIFTY ENERGY") == 256265
+
+    # 7. Start Engine
+    await engine.start()
+    assert engine.is_running is True
+    assert kite_broker._is_running is True
+
+    # Verify active stock tokens + sector indices were resolved and passed to KiteBroker
+    for tok in [738561, 256265, 2953217, 257289]:
+        assert tok in kite_broker.tokens_to_subscribe
+    assert len(kite_broker.tokens_to_subscribe) >= 4
+
+    # Verify OrderManager uses PaperBroker in PAPER mode for safety
+    assert isinstance(engine.order_manager.broker, PaperBroker)
+
+    # 8. Stop Engine
+    await engine.stop()
+    assert engine.is_running is False
+    assert kite_broker._is_running is False
+    mock_ticker.close.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_trillionaire_engine_auto_creates_kite_broker_with_feeder(tmp_path: Path):
+    """
+    Verifies that when broker is None and data_feeder is ZERODHA_KITE,
+    TrillionaireEngine auto-instantiates KiteBroker, resolves tokens on start(),
+    and stops cleanly.
+    """
+    bus = EventBus()
+    mock_kite = MagicMock()
+    mock_kite.positions.return_value = {"net": []}
+    mock_kite.instruments.return_value = [
+        {"tradingsymbol": "INFY", "instrument_token": 408065, "instrument_type": "EQ", "segment": "NSE", "tick_size": 0.05, "lot_size": 1},
+        {"tradingsymbol": "NIFTY IT", "instrument_token": 257289, "instrument_type": "INDEX", "segment": "INDICES", "tick_size": 0.05, "lot_size": 1},
+    ]
+
+    mock_auth = MagicMock(spec=KiteAuthManager)
+    mock_auth.get_valid_access_token.return_value = "mock_token"
+    mock_auth.get_kite_client.return_value = mock_kite
+
+    instrument_sync = InstrumentSync(kite_client=mock_kite, cache_path=tmp_path / "inst.json")
+    instrument_sync.sync_instruments()
+
+    strategy_runner = LiveStrategyRunner(event_bus=bus)
+    profile_infy = StockProfile(
+        tradingsymbol="INFY",
+        instrument_token=408065,
+        parent_index="NIFTY IT",
+        index_token=257289,
+        cluster_regime=ClusterRegime.TREND_MOMENTUM,
+        beta_5y=0.9,
+        adr_pct=2.2,
+        atr_multiplier_sl=1.5,
+        atr_multiplier_tp=3.0,
+        min_rvol_threshold=1.5,
+        oos_sharpe=1.5,
+        oos_profit_factor=1.7,
+        is_active=True,
+    )
+    strategy_runner._set_profiles([profile_infy])
+
+    engine = TrillionaireEngine(
+        trading_mode=TradingMode.PAPER,
+        data_feeder=DataFeederType.ZERODHA_KITE,
+        event_bus=bus,
+        broker=None,
+        auth_manager=mock_auth,
+        instrument_sync=instrument_sync,
+        strategy_runner=strategy_runner,
+    )
+
+    assert isinstance(engine.broker, KiteBroker)
+
+    await engine.start()
+    assert engine.is_running is True
+    assert 408065 in engine.broker.tokens_to_subscribe
+    assert 257289 in engine.broker.tokens_to_subscribe
+
+    await engine.stop()
+    assert engine.is_running is False
+    assert engine.broker._is_running is False

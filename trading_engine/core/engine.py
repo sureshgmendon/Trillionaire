@@ -21,9 +21,9 @@ from shared.enums import DataFeederType, TradingMode
 from shared.schemas import Signal
 
 from trading_engine.brokers.kite.auth import KiteAuthManager
+from trading_engine.brokers.kite.instruments import InstrumentSync
 
-if True:
-    from trading_engine.brokers.kite.instruments import InstrumentSync
+if TYPE_CHECKING:
     from trading_engine.brokers.kite.kite_broker import KiteBroker
 
 from trading_engine.core.event_bus import (
@@ -83,18 +83,23 @@ class TrillionaireEngine:
             event_bus=self.bus,
         )
 
-        # 5. Broker Adapter (PaperBroker for PAPER/REPLAY, KiteBroker for LIVE)
+        # 5. Broker Adapter (PaperBroker for PAPER/REPLAY with FREE_LIVE, KiteBroker for LIVE or ZERODHA_KITE)
         if broker is not None:
             self.broker = broker
             self.auth_manager = auth_manager
-            self.instrument_sync = instrument_sync
-        elif self.trading_mode == TradingMode.LIVE:
-            from trading_engine.brokers.kite.auth import KiteAuthManager
-            from trading_engine.brokers.kite.instruments import InstrumentSync
+            self.instrument_sync = instrument_sync or getattr(broker, "instruments", None) or InstrumentSync()
+        elif self.trading_mode == TradingMode.LIVE or self.data_feeder == DataFeederType.ZERODHA_KITE:
             from trading_engine.brokers.kite.kite_broker import KiteBroker
 
-            self.auth_manager = auth_manager or KiteAuthManager()
-            kite_client = self.auth_manager.get_kite_client()
+            self.auth_manager = auth_manager or (
+                KiteAuthManager() if (settings.kite_api_key and settings.kite_user_id) else None
+            )
+            kite_client = None
+            if self.auth_manager is not None:
+                try:
+                    kite_client = self.auth_manager.get_kite_client()
+                except Exception as e:
+                    logger.debug(f"Kite client not initialized during __init__: {e}")
             self.instrument_sync = instrument_sync or InstrumentSync(kite_client=kite_client)
             self.broker = KiteBroker(
                 kite_client=kite_client,
@@ -102,16 +107,19 @@ class TrillionaireEngine:
                 instrument_sync=self.instrument_sync,
             )
         else:
-            from trading_engine.brokers.kite.instruments import InstrumentSync
-
             self.broker = PaperBroker(event_bus=self.bus)
-            self.auth_manager = None
+            self.auth_manager = auth_manager
             self.instrument_sync = instrument_sync or InstrumentSync()
 
         # 6. Order Manager
+        default_om_broker = (
+            self.broker
+            if (self.trading_mode == TradingMode.LIVE or isinstance(self.broker, PaperBroker))
+            else PaperBroker(event_bus=self.bus)
+        )
         self.order_manager = order_manager or OrderManager(
             event_bus=self.bus,
-            broker=self.broker,
+            broker=default_om_broker,
             risk_gatekeeper=self.risk_gatekeeper,
         )
 
@@ -148,10 +156,12 @@ class TrillionaireEngine:
         logger.info(f"Booting TrillionaireEngine for trade date: {self.current_trade_date}...")
 
         # 1. Live Authentication & Instrument Master Sync
-        if self.trading_mode == TradingMode.LIVE and self.data_feeder == DataFeederType.ZERODHA_KITE and self.auth_manager is not None:
+        if (self.trading_mode == TradingMode.LIVE or self.data_feeder == DataFeederType.ZERODHA_KITE) and self.auth_manager is not None:
             try:
                 self.auth_manager.get_valid_access_token(trade_date=self.current_trade_date)
+                kite_client = self.auth_manager.get_kite_client()
                 if self.instrument_sync is not None:
+                    self.instrument_sync.kite = kite_client
                     self.instrument_sync.sync_instruments()
             except Exception as e:
                 logger.error(f"Premarket authentication/instrument sync failed: {e}")
@@ -219,6 +229,41 @@ class TrillionaireEngine:
         else:
             logger.info(f"[ENGINE ROUTING] Signal {signal.signal_id} on {sym} rejected by risk sizing (Qty=0)")
 
+    def _resolve_subscribed_tokens(self) -> list[int]:
+        """
+        Resolves Kite instrument tokens for all active StockProfiles and their parent sector indices.
+        """
+        tokens: set[int] = set()
+        active_profiles = [p for p in self.strategy_runner.profiles.values() if p.is_active]
+        if not active_profiles:
+            active_profiles = list(self.strategy_runner.profiles.values())
+
+        for profile in active_profiles:
+            # 1. Resolve stock token
+            tok = None
+            if self.instrument_sync is not None:
+                tok = self.instrument_sync.get_token(profile.tradingsymbol)
+            if tok is None and profile.instrument_token:
+                tok = profile.instrument_token
+            if tok:
+                tokens.add(int(tok))
+
+            # 2. Resolve parent sector index token
+            if profile.parent_index:
+                idx_tok = None
+                if self.instrument_sync is not None:
+                    idx_tok = self.instrument_sync.get_token(profile.parent_index)
+                if idx_tok is None and getattr(profile, "index_token", None):
+                    idx_tok = profile.index_token
+                if idx_tok:
+                    tokens.add(int(idx_tok))
+
+        resolved = sorted(list(tokens))
+        logger.info(
+            f"[ZERODHA FEED] Resolved {len(resolved)} instrument tokens for {len(active_profiles)} active profiles and sector indices."
+        )
+        return resolved
+
     async def start(self) -> None:
         """Starts real-time engine operations, activates broker/feeder, and subscribes signal router."""
         if not self.is_booted:
@@ -240,6 +285,27 @@ class TrillionaireEngine:
                 self.free_feeder = FreeLiveMarketFeeder(event_bus=self.bus)
             await self.free_feeder.start()
         elif self.data_feeder == DataFeederType.ZERODHA_KITE:
+            from trading_engine.brokers.kite.kite_broker import KiteBroker
+
+            resolved_tokens = self._resolve_subscribed_tokens()
+            if isinstance(self.broker, KiteBroker) or hasattr(self.broker, "tokens_to_subscribe"):
+                self.broker.tokens_to_subscribe = resolved_tokens
+            else:
+                kite_client = None
+                if self.auth_manager is not None:
+                    try:
+                        kite_client = self.auth_manager.get_kite_client()
+                    except Exception as e:
+                        logger.warning(f"Failed to get kite_client for KiteBroker: {e}")
+                self.broker = KiteBroker(
+                    kite_client=kite_client,
+                    event_bus=self.bus,
+                    instrument_sync=self.instrument_sync,
+                    tokens_to_subscribe=resolved_tokens,
+                )
+                if hasattr(self.broker, "set_order_manager") and callable(self.broker.set_order_manager):
+                    self.broker.set_order_manager(self.order_manager)
+
             if hasattr(self.broker, "start") and callable(self.broker.start):
                 await self.broker.start()
 
@@ -323,8 +389,30 @@ class TrillionaireEngine:
             if self.free_feeder is None:
                 self.free_feeder = FreeLiveMarketFeeder(event_bus=self.bus)
             await self.free_feeder.start()
-        elif new_feeder == DataFeederType.ZERODHA_KITE and hasattr(self.broker, "start"):
-            await self.broker.start()
+        elif new_feeder == DataFeederType.ZERODHA_KITE:
+            from trading_engine.brokers.kite.kite_broker import KiteBroker
+
+            resolved_tokens = self._resolve_subscribed_tokens()
+            if isinstance(self.broker, KiteBroker) or hasattr(self.broker, "tokens_to_subscribe"):
+                self.broker.tokens_to_subscribe = resolved_tokens
+            else:
+                kite_client = None
+                if self.auth_manager is not None:
+                    try:
+                        kite_client = self.auth_manager.get_kite_client()
+                    except Exception as e:
+                        logger.warning(f"Failed to get kite_client for KiteBroker: {e}")
+                self.broker = KiteBroker(
+                    kite_client=kite_client,
+                    event_bus=self.bus,
+                    instrument_sync=self.instrument_sync,
+                    tokens_to_subscribe=resolved_tokens,
+                )
+                if hasattr(self.broker, "set_order_manager") and callable(self.broker.set_order_manager):
+                    self.broker.set_order_manager(self.order_manager)
+
+            if hasattr(self.broker, "start") and callable(self.broker.start):
+                await self.broker.start()
 
     def get_status(self) -> Dict[str, Any]:
         """Returns comprehensive diagnostic and operational metrics snapshot."""
