@@ -58,6 +58,9 @@ class TelemetryManager:
     def set_engine(self, engine: Any) -> None:
         """Attaches TrillionaireEngine instance for diagnostic snapshot queries."""
         self.engine = engine
+        if hasattr(engine, "bus") and engine.bus != self.bus:
+            self.bus = engine.bus
+            self._register_subscribers()
 
     def _register_subscribers(self) -> None:
         """Subscribes handler callbacks to EventBus topics."""
@@ -125,6 +128,11 @@ class TelemetryManager:
         # Prune dead sockets
         for dead_ws in dead_sockets:
             self.disconnect(dead_ws)
+
+    async def broadcast_snapshot(self) -> None:
+        """Constructs and broadcasts a real-time SNAPSHOT envelope to all connected dashboard tabs."""
+        snapshot = self.build_snapshot()
+        await self.broadcast(snapshot)
 
     # -------------------------------------------------------------------------
     # EventBus Listeners

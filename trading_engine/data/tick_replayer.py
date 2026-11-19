@@ -16,7 +16,7 @@ import polars as pl
 from config.settings import settings
 from research_lab.data_loader.kite_history import DATA_STORE_DIR
 from research_lab.data_loader.synthetic_generator import FALLBACK_DATA_STORE_DIR
-from shared.constants import IST_TZ
+from shared.constants import DEFAULT_REPLAY_BASKET, IST_TZ
 from shared.schemas import Tick
 from trading_engine.core.event_bus import EventBus, TickEvent, bus
 
@@ -237,14 +237,15 @@ class HistoricalTickReplayer:
         trading_date: Optional[date] = None,
         symbols: Optional[List[str]] = None,
         speed: str = "MAX_SPEED",  # 1x, 10x, 50x, MAX_SPEED
+        progress_callback: Optional[Any] = None,
     ) -> int:
         """
         Replays a historical trading day across specified symbols and parent indices.
         Interleaves ticks chronologically to maintain cross-sectional consistency.
         Returns total ticks replayed.
         """
-        if symbols is None:
-            symbols = settings.get_tracked_symbols()[:5]  # Default top 5 for simulation
+        if not symbols:
+            symbols = list(DEFAULT_REPLAY_BASKET)
 
         # Also include parent sector indices
         sector_data = settings.load_sector_map()
@@ -253,7 +254,10 @@ class HistoricalTickReplayer:
             if s["tradingsymbol"] in symbols:
                 needed_indices.add(s["parent_index"])
 
-        all_instruments = list(symbols) + list(needed_indices)
+        all_instruments = list(symbols)
+        for idx in needed_indices:
+            if idx not in all_instruments:
+                all_instruments.append(idx)
         all_ticks: List[Tick] = []
 
         # Determine consistent replay date across instruments if not provided
@@ -336,6 +340,14 @@ class HistoricalTickReplayer:
         for i, tick in enumerate(all_ticks):
             event = TickEvent(tick=tick)
             await self.bus.publish(event)
+
+            if progress_callback is not None and ((i + 1) % 250 == 0 or (i + 1) == total_ticks):
+                try:
+                    res = progress_callback(i + 1, total_ticks)
+                    if asyncio.iscoroutine(res):
+                        await res
+                except Exception as e:
+                    logger.debug(f"[REPLAY PROGRESS CALLBACK] {e}")
 
             if delay > 0:
                 await asyncio.sleep(delay)

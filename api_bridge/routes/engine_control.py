@@ -19,8 +19,9 @@ from pydantic import BaseModel, Field
 from loguru import logger
 
 from config.settings import settings
+from api_bridge.ws.telemetry_manager import telemetry_manager
 from research_lab.data_loader.synthetic_generator import DATA_STORE_DIR, FALLBACK_DATA_STORE_DIR, SyntheticDataGenerator
-from shared.constants import IST_TZ
+from shared.constants import DEFAULT_REPLAY_BASKET, IST_TZ
 from shared.enums import TradingMode
 from trading_engine.core.engine import TrillionaireEngine
 from trading_engine.data.tick_replayer import HistoricalTickReplayer
@@ -194,6 +195,24 @@ async def trigger_emergency_kill_switch(
     }
 
 
+def _resolve_replay_symbols(symbols: Optional[List[str]]) -> List[str]:
+    """Resolves target symbols defaulting to multi-sector basket with parent indices."""
+    if not symbols:
+        return list(DEFAULT_REPLAY_BASKET)
+
+    sector_data = settings.load_sector_map()
+    needed_indices = set()
+    for s in sector_data.get("stocks", []):
+        if s["tradingsymbol"] in symbols:
+            needed_indices.add(s["parent_index"])
+
+    resolved = list(symbols)
+    for idx in needed_indices:
+        if idx not in resolved:
+            resolved.append(idx)
+    return resolved
+
+
 def _is_missing_parquets(data_dir: Path, symbols: Optional[List[str]]) -> bool:
     """Checks whether data_dir has no parquets or is missing requested symbols."""
     if not data_dir.exists():
@@ -201,7 +220,7 @@ def _is_missing_parquets(data_dir: Path, symbols: Optional[List[str]]) -> bool:
     parquet_files = list(data_dir.glob("*.parquet"))
     if not parquet_files:
         return True
-    check_syms = symbols if symbols else settings.get_tracked_symbols()[:5]
+    check_syms = _resolve_replay_symbols(symbols)
     for sym in check_syms:
         clean = sym.replace(":", "_").replace(" ", "_")
         candidates = [
@@ -222,16 +241,20 @@ def _generate_synthetic_universe_sync(data_dir: Path, symbols: Optional[List[str
     target_dir = generator.data_dir
     generator.generate_all_sector_universe(num_days=num_days)
 
-    if symbols:
-        for sym in symbols:
-            clean = sym.replace(":", "_").replace(" ", "_")
-            p_path = target_dir / f"{clean}_1m.parquet"
-            if not p_path.exists():
-                generator.generate_correlated_stock_series(
-                    tradingsymbol=sym,
-                    parent_index_symbol="NIFTY 50",
-                    num_days=num_days,
-                )
+    syms_to_gen = _resolve_replay_symbols(symbols)
+    stock_to_index = {s["tradingsymbol"]: s["parent_index"] for s in settings.load_sector_map().get("stocks", [])}
+    for sym in syms_to_gen:
+        if "NIFTY" in sym:
+            continue
+        clean = sym.replace(":", "_").replace(" ", "_")
+        p_path = target_dir / f"{clean}_1m.parquet"
+        if not p_path.exists():
+            parent_idx = stock_to_index.get(sym, "NIFTY 50")
+            generator.generate_correlated_stock_series(
+                tradingsymbol=sym,
+                parent_index_symbol=parent_idx,
+                num_days=num_days,
+            )
     return target_dir
 
 
@@ -246,15 +269,18 @@ async def start_historical_replay(
     Requires X-API-Key header.
     """
     try:
+        # Resolve target symbols: default to multi-sector basket if blank
+        replay_symbols = _resolve_replay_symbols(req.symbols)
+
         # Resolve writable data directory (falls back to /tmp/trillionaire_data_store if permissions denied)
         effective_data_dir = get_writable_data_store_dir(DATA_STORE_DIR)
 
         # Check if parquet dataset is missing or incomplete
-        if _is_missing_parquets(effective_data_dir, req.symbols):
+        if _is_missing_parquets(effective_data_dir, replay_symbols):
             logger.warning(
                 f"[REPLAY AUTO-SEED] Parquet datasets missing in {effective_data_dir}. Auto-generating 30-day synthetic universe via worker thread..."
             )
-            effective_data_dir = await asyncio.to_thread(_generate_synthetic_universe_sync, effective_data_dir, req.symbols, 30)
+            effective_data_dir = await asyncio.to_thread(_generate_synthetic_universe_sync, effective_data_dir, replay_symbols, 30)
 
         target_date: Optional[date] = None
         if req.trading_date:
@@ -266,20 +292,42 @@ async def start_historical_replay(
                     detail=f"Invalid trading_date format '{req.trading_date}', expected YYYY-MM-DD",
                 )
 
+        # Ensure engine is booted so stock profiles, indicators, and risk guard are initialized
+        if not engine.is_booted:
+            await engine.boot_premarket()
+
+        # Connect telemetry broadcaster to this engine
+        telemetry_manager.set_engine(engine)
+
+        # Set replay flag so engine routes strategy signals during simulation
+        engine.is_replaying = True
+
         replayer = HistoricalTickReplayer(event_bus=engine.bus, data_dir=effective_data_dir)
-        logger.info(f"[API CONTROL] Starting replay on {target_date or 'latest'} at {req.speed}...")
+        logger.info(f"[API CONTROL] Starting replay for {len(replay_symbols)} instruments on {target_date or 'latest'} at {req.speed}...")
+
+        async def _on_replay_progress(replayed_count: int, total_count: int) -> None:
+            await telemetry_manager.broadcast_snapshot()
 
         total_ticks = await replayer.replay_session(
             trading_date=target_date,
-            symbols=req.symbols,
+            symbols=replay_symbols,
             speed=req.speed,
+            progress_callback=_on_replay_progress,
         )
+
+        # Flush any trailing candle buckets to evaluate final bars
+        await engine.candle_aggregator.finalize_active_candles()
+
+        # Final snapshot broadcast to ensure all dashboard tabs are fully updated
+        await telemetry_manager.broadcast_snapshot()
 
         return {
             "status": "completed",
             "trading_date": target_date.isoformat() if target_date else "latest",
             "speed": req.speed,
             "ticks_replayed": total_ticks,
+            "funnel_metrics": engine.funnel_metrics,
+            "open_positions_count": len(engine.order_manager.open_positions),
             "timestamp_ist": datetime.now(IST_TZ).isoformat(),
         }
     except HTTPException:
@@ -290,3 +338,5 @@ async def start_historical_replay(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Replay execution failed: {str(exc)}",
         )
+    finally:
+        engine.is_replaying = False

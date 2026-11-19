@@ -671,3 +671,56 @@ async def test_tick_replayer_resilient_to_missing_and_variant_timestamp_columns(
         assert t.timestamp_ist.tzinfo is not None
 
 
+@pytest.mark.asyncio
+async def test_replay_with_empty_instruments_includes_parent_sectors_and_updates_funnel(mock_engine_and_client, tmp_path):
+    """
+    Verifies that running Replay with empty/blank instruments:
+    1. Defaults to the rich multi-sector basket including parent sector indices (NIFTY BANK, NIFTY ENERGY, NIFTY IT).
+    2. Auto-generates parquets for stocks and their parent indices if missing.
+    3. Replays ticks through CandleAggregator, LiveStrategyRunner, and OrderManager.
+    4. Increments engine.funnel_metrics['candles_evaluated'] > 0.
+    5. Updates telemetry state and GET /api/v1/status.
+    """
+    engine, client, _, _, _ = mock_engine_and_client
+    admin_key = settings.trillionaire_admin_key
+
+    store_dir = tmp_path / "replay_full_basket"
+    store_dir.mkdir(parents=True, exist_ok=True)
+
+    with patch("api_bridge.routes.engine_control.DATA_STORE_DIR", store_dir):
+        with patch("trading_engine.data.tick_replayer.DATA_STORE_DIR", store_dir):
+            resp = client.post(
+                "/api/v1/control/replay",
+                headers={"X-API-Key": admin_key},
+                json={"speed": "MAX_SPEED"},  # symbols omitted/blank
+            )
+            assert resp.status_code == 200, f"Expected 200 OK, got {resp.status_code}: {resp.text}"
+            data = resp.json()
+            assert data["status"] == "completed"
+            assert data["ticks_replayed"] > 0
+            assert "funnel_metrics" in data
+            assert data["funnel_metrics"]["candles_evaluated"] > 0
+
+            # 1. Assert parent sector indices were generated in store_dir
+            assert (store_dir / "NIFTY_ENERGY_1m.parquet").exists()
+            assert (store_dir / "NIFTY_BANK_1m.parquet").exists()
+            assert (store_dir / "NIFTY_IT_1m.parquet").exists()
+
+            # 2. Assert multi-sector stocks were generated
+            assert (store_dir / "RELIANCE_1m.parquet").exists()
+            assert (store_dir / "HDFCBANK_1m.parquet").exists()
+            assert (store_dir / "SBIN_1m.parquet").exists()
+            assert (store_dir / "INFY_1m.parquet").exists()
+            assert (store_dir / "TCS_1m.parquet").exists()
+
+            # 3. Assert engine.funnel_metrics is updated
+            assert engine.funnel_metrics["candles_evaluated"] > 0
+
+            # 4. Assert GET /api/v1/status returns the updated funnel metrics
+            status_resp = client.get("/api/v1/status")
+            assert status_resp.status_code == 200
+            status_data = status_resp.json()
+            assert status_data["funnel_metrics"]["candles_evaluated"] > 0
+
+
+

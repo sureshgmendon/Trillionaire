@@ -137,7 +137,11 @@ class TrillionaireEngine:
         # Engine state
         self.is_running = False
         self.is_booted = False
+        self.is_replaying = False
         self.current_trade_date: Optional[date] = None
+
+        # Wire reactive signal routing on EventBus
+        self.bus.subscribe(SignalEvent, self.on_signal)
 
         logger.info(
             f"TrillionaireEngine initialized [Mode: {self.trading_mode.value}, Feeder: {self.data_feeder.value}, Tier: {self.risk_gatekeeper.tier_name}]"
@@ -194,12 +198,27 @@ class TrillionaireEngine:
             "trading_mode": self.trading_mode.value,
         }
 
+    @property
+    def funnel_metrics(self) -> Dict[str, int]:
+        """Returns live signal funnel telemetry metrics from LiveStrategyRunner."""
+        return getattr(self.strategy_runner, "funnel_metrics", {
+            "candles_evaluated": 0,
+            "passed_stock_rule": 0,
+            "passed_sector_filter": 0,
+            "signals_emitted": 0,
+        })
+
+    @funnel_metrics.setter
+    def funnel_metrics(self, value: Dict[str, int]) -> None:
+        if hasattr(self.strategy_runner, "funnel_metrics"):
+            self.strategy_runner.funnel_metrics = value
+
     async def on_signal(self, event: SignalEvent) -> None:
         """
         EventBus listener for validated strategy SignalEvents.
         Queries Sentinel risk tag, sizes position dynamically, and submits marketable order.
         """
-        if not self.is_running:
+        if not self.is_running and not getattr(self, "is_replaying", False):
             return
 
         signal: Signal = event.signal

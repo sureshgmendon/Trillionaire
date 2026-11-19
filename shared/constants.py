@@ -60,3 +60,17 @@ SEBI_TURNOVER_RATE = 0.000001
 
 # Stamp Duty: 0.003% (Rs 300 per crore) on Buy side turnover
 STAMP_DUTY_BUY_RATE = 0.00003
+
+# ---------------------------------------------------------
+# Default Multi-Sector Historical Replay Basket
+# ---------------------------------------------------------
+DEFAULT_REPLAY_BASKET = [
+    "RELIANCE",
+    "NIFTY ENERGY",
+    "SBIN",
+    "HDFCBANK",
+    "NIFTY BANK",
+    "INFY",
+    "TCS",
+    "NIFTY IT",
+]

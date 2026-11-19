@@ -93,6 +93,9 @@ class CandleAggregator:
         # symbol -> latest closed candles per timeframe
         self._latest_closed_candles: Dict[Tuple[str, Timeframe], Candle] = {}
 
+        # Register EventBus subscribers
+        self.bus.subscribe(TickEvent, self.on_tick_event)
+
     def get_state(self, symbol: str, timeframe: Timeframe) -> TimeframeState:
         key = (symbol, timeframe)
         if key not in self._states:
@@ -526,6 +529,23 @@ class CandleAggregator:
             # Update Opening Range (09:15 - 09:30)
             self._update_opening_range(state, dt_ist, tick.ltp)
 
+        return closed_events
+
+    async def finalize_active_candles(self) -> List[CandleCloseEvent]:
+        """
+        Finalizes and publishes any active ongoing candles across all tracked states.
+        Useful at the end of session replays or trading day square-offs.
+        """
+        closed_events: List[CandleCloseEvent] = []
+        for (symbol, tf), state in list(self._states.items()):
+            if state.current_bucket_start is not None and state.ticks_count > 0:
+                closed_candle = self._finalize_candle(state)
+                close_event = CandleCloseEvent(candle=closed_candle)
+                closed_events.append(close_event)
+                self._latest_closed_candles[(symbol, tf)] = closed_candle
+                await self.bus.publish(close_event)
+                state.current_bucket_start = None
+                state.ticks_count = 0
         return closed_events
 
     def _finalize_candle(self, state: TimeframeState) -> Candle:
