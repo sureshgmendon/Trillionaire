@@ -210,7 +210,7 @@ async def start_trading_engine(
     """
     logger.info(f"[API LIFECYCLE] Engine START requested via REST API (boot_premarket={boot_premarket})")
 
-    if not engine.is_booted and boot_premarket:
+    if boot_premarket:
         await engine.boot_premarket()
 
     if not engine.is_running:

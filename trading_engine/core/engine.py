@@ -177,38 +177,7 @@ class TrillionaireEngine:
         self.strategy_runner.load_profiles_from_disk()
 
         # 5. Morning Indicator Warmup from Parquet with Live History Fallback
-        kite_client = None
-        if self.auth_manager is not None:
-            try:
-                kite_client = self.auth_manager.get_kite_client()
-            except Exception:
-                pass
-
-        warmed = self.candle_aggregator.warmup_from_parquet(
-            symbols=list(self.strategy_runner.profiles.keys()),
-            kite_client=kite_client,
-            instrument_sync=self.instrument_sync,
-        )
-        # Seed parent index EMA(20) and baseline M5 candle into strategy runner
-        for sym, metrics in warmed.items():
-            if "NIFTY" in sym:
-                self.strategy_runner.seed_index_ema_20(sym, metrics.get("ema_20", 0.0))
-                if "prev_close" in metrics:
-                    c = metrics["prev_close"]
-                    self.strategy_runner._latest_candles[(sym, Timeframe.M5)] = Candle(
-                        tradingsymbol=sym,
-                        timeframe=Timeframe.M5,
-                        timestamp_ist=datetime.now(IST_TZ),
-                        open=c,
-                        high=c,
-                        low=c,
-                        close=c,
-                        volume=1000,
-                        vwap=c,
-                        ema_200=metrics.get("ema_200", c),
-                        atr_14=metrics.get("atr_14", 1.0),
-                        rvol=1.0,
-                    )
+        warmed = self.warmup_indicators()
 
         self.is_booted = True
         logger.info(
@@ -403,6 +372,45 @@ class TrillionaireEngine:
             except RuntimeError:
                 pass
 
+    def warmup_indicators(self) -> Dict[str, Dict[str, float]]:
+        """
+        Pre-warms technical indicators from Parquet or live historical fallback,
+        seeding EMA(200), EMA(20), ATR(14), RVOL, and parent sector indices.
+        """
+        kite_client = None
+        if self.auth_manager is not None:
+            try:
+                kite_client = self.auth_manager.get_kite_client()
+            except Exception:
+                pass
+
+        warmed = self.candle_aggregator.warmup_from_parquet(
+            symbols=list(self.strategy_runner.profiles.keys()),
+            kite_client=kite_client,
+            instrument_sync=self.instrument_sync,
+        )
+        # Seed parent index EMA(20) and baseline M5 candle into strategy runner
+        for sym, metrics in warmed.items():
+            if "NIFTY" in sym:
+                self.strategy_runner.seed_index_ema_20(sym, metrics.get("ema_20", 0.0))
+                if "prev_close" in metrics:
+                    c = metrics["prev_close"]
+                    self.strategy_runner._latest_candles[(sym, Timeframe.M5)] = Candle(
+                        tradingsymbol=sym,
+                        timeframe=Timeframe.M5,
+                        timestamp_ist=datetime.now(IST_TZ),
+                        open=c,
+                        high=c,
+                        low=c,
+                        close=c,
+                        volume=1000,
+                        vwap=c,
+                        ema_200=metrics.get("ema_200", c),
+                        atr_14=metrics.get("atr_14", 1.0),
+                        rvol=1.0,
+                    )
+        return warmed
+
     async def _switch_feeder_runtime(self, old_feeder: DataFeederType, new_feeder: DataFeederType) -> None:
         """Gracefully transitions live data feeders while engine is active."""
         if old_feeder == DataFeederType.FREE_LIVE and self.free_feeder is not None:
@@ -438,6 +446,12 @@ class TrillionaireEngine:
 
             if hasattr(self.broker, "start") and callable(self.broker.start):
                 await self.broker.start()
+
+        # Pre-warm indicators for newly switched feeder so candles evaluate immediately
+        try:
+            self.warmup_indicators()
+        except Exception as e:
+            logger.warning(f"[FEEDER SWITCH] Indicator warmup failed: {e}")
 
     def get_status(self) -> Dict[str, Any]:
         """Returns comprehensive diagnostic and operational metrics snapshot."""

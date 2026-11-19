@@ -18,15 +18,22 @@ from api_bridge.ws.telemetry_manager import telemetry_manager
 from config.settings import settings
 from shared.constants import APP_NAME, APP_VERSION
 from trading_engine.core.engine import TrillionaireEngine
+from trading_engine.core.scheduler import WeekdayMarketScheduler
 
 # Engine singleton for API bridge
 _engine_instance: TrillionaireEngine | None = None
+_scheduler_instance: WeekdayMarketScheduler | None = None
+
+
+def get_scheduler() -> WeekdayMarketScheduler | None:
+    """Dependency provider for WeekdayMarketScheduler instance."""
+    return _scheduler_instance
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """FastAPI Lifespan: Initializes TrillionaireEngine and sets up WebSocket telemetry."""
-    global _engine_instance
+    """FastAPI Lifespan: Initializes TrillionaireEngine, starts scheduler, and sets up WebSocket telemetry."""
+    global _engine_instance, _scheduler_instance
     logger.info("Initializing Trillionaire API Bridge Lifespan...")
 
     from api_bridge.routes.engine_control import _global_engine
@@ -37,6 +44,10 @@ async def lifespan(app: FastAPI):
         set_engine(_engine_instance)
 
     telemetry_manager.set_engine(_engine_instance)
+
+    # Initialize and arm automated weekday market scheduler
+    _scheduler_instance = WeekdayMarketScheduler(engine=_engine_instance)
+    _scheduler_instance.start()
 
     # Boot engine premarket routine if not already booted
     if not _engine_instance.is_booted:
@@ -50,6 +61,8 @@ async def lifespan(app: FastAPI):
 
     # Graceful shutdown
     logger.info("Shutting down Trillionaire API Bridge Lifespan...")
+    if _scheduler_instance:
+        await _scheduler_instance.stop()
     if _engine_instance and _engine_instance.is_running:
         await _engine_instance.stop()
 

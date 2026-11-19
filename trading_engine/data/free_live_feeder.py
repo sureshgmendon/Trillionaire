@@ -37,7 +37,8 @@ USER_AGENTS = (
 
 
 YAHOO_SYMBOL_OVERRIDES: Dict[str, str] = {
-    "TATAMOTORS": "TMCV.NS",
+    "TMPV": "TMPV.NS",
+    "TATAMOTORS": "TMPV.NS",
     "LTIM": "LTM.NS",
     "MCDOWELL-N": "UNITDSPR.NS",
 }

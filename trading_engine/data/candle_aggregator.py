@@ -37,7 +37,8 @@ YAHOO_INDEX_MAP: Dict[str, str] = {
 }
 
 YAHOO_SYMBOL_OVERRIDES: Dict[str, str] = {
-    "TATAMOTORS": "TMCV.NS",
+    "TMPV": "TMPV.NS",
+    "TATAMOTORS": "TMPV.NS",
     "MCDOWELL-N": "UNITDSPR.NS",
     "LTIM": "LTM.NS",
 }
@@ -247,10 +248,11 @@ class CandleAggregator:
         if not symbols:
             return warmed
 
-        logger.info(f"[LIVE HISTORY WARMUP] Fetching historical baseline bars for {len(symbols)} instruments...")
+        days = max(5, days)
+        logger.info(f"[LIVE HISTORY WARMUP] Fetching historical baseline bars for {len(symbols)} instruments (days={days})...")
 
         now_ist = datetime.now(IST_TZ)
-        from_date = (now_ist - timedelta(days=days + 3)).date()
+        from_date = (now_ist - timedelta(days=days + 4)).date()
         to_date = now_ist.date()
 
         store_path = data_dir or (Path(__file__).resolve().parent.parent.parent / "research_lab" / "data_store")

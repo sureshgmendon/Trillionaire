@@ -100,10 +100,11 @@ def test_company_fraud_alert_lockout():
 
     tags = classifier.classify_rule_based(fraud_news)
 
-    # TATAMOTORS must be locked out (DO_NOT_TRADE / 0.0x)
-    assert tags["TATAMOTORS"].status == SentinelStatus.DO_NOT_TRADE
-    assert tags["TATAMOTORS"].risk_multiplier == 0.0
-    assert "fraud" in tags["TATAMOTORS"].reason.lower() or "regulatory" in tags["TATAMOTORS"].reason.lower()
+    # TMPV / TATAMOTORS must be locked out (DO_NOT_TRADE / 0.0x)
+    sym = "TMPV" if "TMPV" in tags else "TATAMOTORS"
+    assert tags[sym].status == SentinelStatus.DO_NOT_TRADE
+    assert tags[sym].risk_multiplier == 0.0
+    assert "fraud" in tags[sym].reason.lower() or "regulatory" in tags[sym].reason.lower()
 
     # Other Auto peers (e.g. MARUTI, M&M) should remain NORMAL
     assert tags["MARUTI"].status == SentinelStatus.NORMAL

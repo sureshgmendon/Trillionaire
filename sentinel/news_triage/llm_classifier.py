@@ -239,6 +239,7 @@ class PreMarketNewsClassifier:
             "ICICIBANK": r"\bicici bank\b",
             "SBIN": r"\bstate bank of india\b|\bsbi\b",
             "TATAMOTORS": r"\btata motors\b",
+            "TMPV": r"\btata motors\b|\btmpv\b",
             "M&M": r"\bmahindra\b|\bm&m\b",
             "SUNPHARMA": r"\bsun pharma\b",
             "BHARTIARTL": r"\bharti airtel\b|\bairtel\b",

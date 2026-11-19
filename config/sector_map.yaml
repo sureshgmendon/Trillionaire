@@ -264,7 +264,7 @@ stocks:
   # ---------------------------------------------------------------------------
   # 3. NIFTY AUTO Sector (13 Stocks)
   # ---------------------------------------------------------------------------
-  - tradingsymbol: "TATAMOTORS"
+  - tradingsymbol: "TMPV"
     instrument_token: 884737
     parent_index: "NIFTY AUTO"
     index_token: 259601

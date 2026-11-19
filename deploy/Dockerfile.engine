@@ -56,9 +56,16 @@ COPY --from=builder /install /usr/local
 # Copy application monorepo
 COPY --chown=trillionaire:trillionaire . /opt/trillionaire
 
-# Ensure logs, research artifacts, and cache directories exist and are writable
-RUN mkdir -p /opt/trillionaire/logs /opt/trillionaire/research_lab/artifacts && \
-    chown -R trillionaire:trillionaire /opt/trillionaire
+# Ensure logs, research artifacts, data store, and cache directories exist and are writable
+RUN mkdir -p /opt/trillionaire/logs \
+             /opt/trillionaire/research_lab/artifacts \
+             /opt/trillionaire/research_lab/data_store \
+             /opt/trillionaire/sentinel/artifacts && \
+    chown -R trillionaire:trillionaire /opt/trillionaire && \
+    chmod -R 775 /opt/trillionaire/logs \
+                 /opt/trillionaire/research_lab/artifacts \
+                 /opt/trillionaire/research_lab/data_store \
+                 /opt/trillionaire/sentinel/artifacts
 
 USER trillionaire
 

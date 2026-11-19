@@ -199,5 +199,5 @@ def test_stock_profiles_artifact_validity():
     assert "RELIANCE" in symbols
     assert "TCS" in symbols
     assert "HDFCBANK" in symbols
-    assert "TATAMOTORS" in symbols
+    assert "TMPV" in symbols
     assert "SUNPHARMA" in symbols

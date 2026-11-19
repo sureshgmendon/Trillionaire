@@ -170,6 +170,14 @@ async def start_historical_replay(
     Starts an offline historical session replay onto EventBus for dashboard visual validation.
     Requires X-API-Key header.
     """
+    from research_lab.data_loader.synthetic_generator import DATA_STORE_DIR, SyntheticDataGenerator
+
+    parquet_files = list(DATA_STORE_DIR.glob("*.parquet")) if DATA_STORE_DIR.exists() else []
+    if not parquet_files:
+        logger.warning(f"[REPLAY] No parquet files found in {DATA_STORE_DIR}. Auto-generating 30-day synthetic universe...")
+        generator = SyntheticDataGenerator(data_dir=DATA_STORE_DIR)
+        generator.generate_all_sector_universe(num_days=30)
+
     target_date: Optional[date] = None
     if req.trading_date:
         try:

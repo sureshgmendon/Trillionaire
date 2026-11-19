@@ -209,8 +209,10 @@ def test_100_stock_universe_and_profiles():
     profile_syms = {p["tradingsymbol"] for p in profiles_data}
     assert "UNITDSPR" in profile_syms, "Renamed symbol UNITDSPR must be present in stock_profiles.json"
     assert "LTM" in profile_syms, "Renamed symbol LTM must be present in stock_profiles.json"
+    assert "TMPV" in profile_syms, "Demerged symbol TMPV must be present in stock_profiles.json"
     assert "MCDOWELL-N" not in profile_syms, "Legacy symbol MCDOWELL-N must not be in stock_profiles.json"
     assert "LTIM" not in profile_syms, "Legacy symbol LTIM must not be in stock_profiles.json"
+    assert "TATAMOTORS" not in profile_syms, "Demerged symbol TATAMOTORS must be replaced by TMPV in stock_profiles.json"
 
 
 # ==============================================================================
@@ -393,3 +395,105 @@ async def test_live_m5_candle_close_increments_funnel_eval_on_boot(mock_engine_a
     assert resp.status_code == 200
     status_data = resp.json()
     assert status_data["funnel_metrics"]["candles_evaluated"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_engine_start_runs_boot_premarket_every_time(mock_engine_and_client):
+    """
+    Verifies that POST /api/v1/control/engine/start with boot_premarket=True
+    invokes engine.boot_premarket() even if engine.is_booted is already True.
+    """
+    engine, client, _, _, _ = mock_engine_and_client
+    admin_key = settings.trillionaire_admin_key
+
+    # Ensure engine is marked booted
+    engine.is_booted = True
+    boot_called = False
+
+    async def mock_boot(**kwargs):
+        nonlocal boot_called
+        boot_called = True
+        return {"status": "booted"}
+
+    engine.boot_premarket = mock_boot
+
+    # Request start with boot_premarket=True (default)
+    resp = client.post("/api/v1/control/engine/start?boot_premarket=true", headers={"X-API-Key": admin_key})
+    assert resp.status_code == 200
+    assert boot_called is True, "boot_premarket() must be invoked whenever boot_premarket=True"
+
+
+@pytest.mark.asyncio
+async def test_replay_auto_seeds_when_datastore_empty(mock_engine_and_client, tmp_path):
+    """
+    Verifies that POST /control/replay auto-generates 30 days of synthetic data
+    when research_lab/data_store has no parquet files.
+    """
+    engine, client, _, _, _ = mock_engine_and_client
+    admin_key = settings.trillionaire_admin_key
+
+    generated_called = False
+
+    def mock_generate(self, num_days=30):
+        nonlocal generated_called
+        generated_called = True
+        assert num_days == 30
+
+    with patch("research_lab.data_loader.synthetic_generator.SyntheticDataGenerator.generate_all_sector_universe", mock_generate):
+        with patch("trading_engine.data.tick_replayer.HistoricalTickReplayer.replay_session", return_value=100):
+            with patch("research_lab.data_loader.synthetic_generator.DATA_STORE_DIR", tmp_path):
+                resp = client.post(
+                    "/api/v1/control/replay",
+                    headers={"X-API-Key": admin_key},
+                    json={"speed": "MAX_SPEED"},
+                )
+                assert resp.status_code == 200
+                assert generated_called is True, "Replay must auto-generate synthetic data when store is empty"
+
+
+def test_warmup_from_live_history_210_bars(tmp_path: Path):
+    """
+    Validates warmup_from_live_history with 220 bars to ensure full EMA(200) warmup on Bar #1.
+    """
+    bus = EventBus()
+    agg = CandleAggregator(event_bus=bus)
+
+    # Mock 220 5-minute bars
+    bars = []
+    base_price = 2500.0
+    for i in range(220):
+        p = base_price + (i * 0.5)
+        bars.append({
+            "date": f"2026-03-01 09:{15 + (i % 60):02d}:00",
+            "open": p,
+            "high": p + 2.0,
+            "low": p - 2.0,
+            "close": p + 1.0,
+            "volume": 5000 + i * 10,
+        })
+
+    mock_kite = MagicMock()
+    mock_kite.historical_data.return_value = bars
+
+    mock_sync = MagicMock()
+    mock_sync.get_token.return_value = 738561
+
+    warmed = agg.warmup_from_live_history(
+        symbols=["RELIANCE"],
+        kite_client=mock_kite,
+        instrument_sync=mock_sync,
+        days=5,
+        save_to_parquet=False,
+        data_dir=tmp_path,
+    )
+
+    assert "RELIANCE" in warmed
+    assert warmed["RELIANCE"]["bars_loaded"] == 220
+    assert warmed["RELIANCE"]["ema_200"] > 0
+    assert warmed["RELIANCE"]["ema_20"] > 0
+    assert warmed["RELIANCE"]["atr_14"] > 0
+
+    st = agg.get_state("RELIANCE", Timeframe.M5)
+    assert st.ema_200 == warmed["RELIANCE"]["ema_200"]
+    assert st.ema_20 == warmed["RELIANCE"]["ema_20"]
+

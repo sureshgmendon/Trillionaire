@@ -357,7 +357,7 @@ def test_sector_map_loading():
     assert len(tracked_symbols) == 100
     expected_symbols = [
         "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "SBIN",
-        "TATAMOTORS", "M&M", "SUNPHARMA", "LT", "BHARTIARTL", "ITC"
+        "TMPV", "M&M", "SUNPHARMA", "LT", "BHARTIARTL", "ITC"
     ]
     for sym in expected_symbols:
         assert sym in tracked_symbols, f"Expected {sym} to be present in tracked symbols"

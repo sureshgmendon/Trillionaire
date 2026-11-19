@@ -80,6 +80,15 @@
         "risk_multiplier": 0.5,
         "description": "Board Meeting for Demerger & Capital Allocation"
       }
+    ],
+    "TMPV": [
+      {
+        "date": "2026-11-19",
+        "event_type": "BOARD_MEETING",
+        "posture": "CAUTION_HALF_SIZE",
+        "risk_multiplier": 0.5,
+        "description": "Board Meeting for Demerger & Capital Allocation"
+      }
     ]
   }
 }
