@@ -13,7 +13,8 @@ Maintains zero look-ahead incremental indicator state:
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+import httpx
 from loguru import logger
 import numpy as np
 import polars as pl
@@ -23,6 +24,23 @@ from shared.constants import IST_TZ
 from shared.enums import Timeframe
 from shared.schemas import Candle, Tick
 from trading_engine.core.event_bus import CandleCloseEvent, EventBus, TickEvent, bus
+
+YAHOO_INDEX_MAP: Dict[str, str] = {
+    "NIFTY 50": "^NSEI",
+    "NIFTY BANK": "^NSEBANK",
+    "NIFTY IT": "^CNXIT",
+    "NIFTY AUTO": "^CNXAUTO",
+    "NIFTY PHARMA": "^CNXPHARMA",
+    "NIFTY ENERGY": "^CNXENERGY",
+    "NIFTY FMCG": "^CNXFMCG",
+    "NIFTY METAL": "^CNXMETAL",
+}
+
+YAHOO_SYMBOL_OVERRIDES: Dict[str, str] = {
+    "TATAMOTORS": "TMCV.NS",
+    "MCDOWELL-N": "UNITDSPR.NS",
+    "LTIM": "LTM.NS",
+}
 
 
 @dataclass
@@ -105,16 +123,16 @@ class CandleAggregator:
         symbols: Optional[List[str]] = None,
         data_dir: Optional[Path] = None,
         bars_count: int = 250,
+        kite_client: Optional[Any] = None,
+        instrument_sync: Optional[Any] = None,
+        fetch_live_fallback: bool = True,
     ) -> Dict[str, Dict[str, float]]:
         """
-        Loads the last 250 1-minute historical bars per symbol from research_lab/data_store/
-        so EMA(200), EMA(20), and ATR(14) are 100% warmed up and ready right at 09:25 AM IST.
+        Loads historical bars per symbol from research_lab/data_store/*.parquet
+        with automatic live history fallback (via KiteConnect historical data or Yahoo Finance)
+        for any missing instruments, so EMA(200), EMA(20), and ATR(14) are 100% warmed up.
         """
         store_path = data_dir or (Path(__file__).resolve().parent.parent.parent / "research_lab" / "data_store")
-        if not store_path.exists():
-            logger.warning(f"[WARMUP] Historical data store directory not found: {store_path}")
-            return {}
-
         target_symbols = list(symbols) if symbols is not None else settings.get_tracked_symbols()
         # Also include any parent index symbols
         sector_data = settings.load_sector_map()
@@ -122,6 +140,17 @@ class CandleAggregator:
         all_to_warm = list(dict.fromkeys(target_symbols + indices))
 
         warmed: Dict[str, Dict[str, float]] = {}
+
+        if not store_path.exists():
+            logger.warning(f"[WARMUP] Historical data store directory not found: {store_path}. Falling back to live history...")
+            if fetch_live_fallback:
+                return self.warmup_from_live_history(
+                    symbols=all_to_warm,
+                    kite_client=kite_client,
+                    instrument_sync=instrument_sync,
+                    data_dir=store_path,
+                )
+            return {}
 
         for sym in all_to_warm:
             # Check filename candidates
@@ -181,11 +210,173 @@ class CandleAggregator:
                     "atr_14": round(atr_14, 2),
                     "prev_close": round(prev_c, 2),
                     "bars_loaded": n,
+                    "source": "parquet",
                 }
             except Exception as e:
                 logger.warning(f"[WARMUP] Error warming up {sym} from {parquet_file.name}: {e}")
 
-        logger.info(f"[WARMUP COMPLETE] Pre-warmed indicators for {len(warmed)} instruments from historical parquet store")
+        # Check for missing symbols that need live history fallback
+        missing = [s for s in all_to_warm if s not in warmed]
+        if missing and fetch_live_fallback:
+            logger.info(f"[WARMUP] {len(missing)} instruments missing local parquet data. Initiating live history fallback...")
+            live_warmed = self.warmup_from_live_history(
+                symbols=missing,
+                kite_client=kite_client,
+                instrument_sync=instrument_sync,
+                data_dir=store_path,
+            )
+            warmed.update(live_warmed)
+
+        logger.info(f"[WARMUP COMPLETE] Pre-warmed indicators for {len(warmed)} instruments (Total requested: {len(all_to_warm)})")
+        return warmed
+
+    def warmup_from_live_history(
+        self,
+        symbols: List[str],
+        kite_client: Optional[Any] = None,
+        instrument_sync: Optional[Any] = None,
+        days: int = 5,
+        save_to_parquet: bool = True,
+        data_dir: Optional[Path] = None,
+    ) -> Dict[str, Dict[str, float]]:
+        """
+        Fetches the last 5 trading days of real 5-minute bars via KiteConnect or Yahoo Finance
+        and seeds EMA(200), EMA(20), ATR(14), and RVOL baselines into TimeframeState.
+        """
+        warmed: Dict[str, Dict[str, float]] = {}
+        if not symbols:
+            return warmed
+
+        logger.info(f"[LIVE HISTORY WARMUP] Fetching historical baseline bars for {len(symbols)} instruments...")
+
+        now_ist = datetime.now(IST_TZ)
+        from_date = (now_ist - timedelta(days=days + 3)).date()
+        to_date = now_ist.date()
+
+        store_path = data_dir or (Path(__file__).resolve().parent.parent.parent / "research_lab" / "data_store")
+
+        for sym in symbols:
+            bars: Optional[List[Dict[str, Any]]] = None
+
+            # 1. Attempt KiteConnect historical data if authenticated
+            if kite_client is not None and instrument_sync is not None:
+                token = instrument_sync.get_token(sym)
+                if token:
+                    try:
+                        records = kite_client.historical_data(
+                            instrument_token=token,
+                            from_date=from_date,
+                            to_date=to_date,
+                            interval="5minute",
+                        )
+                        if records:
+                            bars = records
+                            logger.debug(f"[WARMUP KITE] Retrieved {len(bars)} 5m bars for {sym} (Token {token})")
+                    except Exception as e:
+                        logger.debug(f"[WARMUP KITE] Could not fetch Kite historical data for {sym}: {e}")
+
+            # 2. Fallback to Yahoo Finance chart API
+            if not bars:
+                if sym in YAHOO_INDEX_MAP:
+                    ysym = YAHOO_INDEX_MAP[sym]
+                else:
+                    ysym = YAHOO_SYMBOL_OVERRIDES.get(sym, f"{sym}.NS")
+
+                try:
+                    url = f"https://query2.finance.yahoo.com/v8/finance/chart/{ysym}?interval=5m&range={days}d"
+                    with httpx.Client(timeout=4.0, headers={"User-Agent": "Mozilla/5.0"}) as client:
+                        resp = client.get(url)
+                        if resp.status_code == 200:
+                            chart_data = resp.json().get("chart", {}).get("result", [])
+                            if chart_data:
+                                res_obj = chart_data[0]
+                                timestamps = res_obj.get("timestamp", [])
+                                quote = res_obj.get("indicators", {}).get("quote", [{}])[0]
+                                c_list = quote.get("close", [])
+                                h_list = quote.get("high", [])
+                                l_list = quote.get("low", [])
+                                v_list = quote.get("volume", [])
+
+                                parsed_bars = []
+                                for i in range(len(timestamps)):
+                                    if i < len(c_list) and c_list[i] is not None:
+                                        parsed_bars.append({
+                                            "close": float(c_list[i]),
+                                            "high": float(h_list[i] if i < len(h_list) and h_list[i] is not None else c_list[i]),
+                                            "low": float(l_list[i] if i < len(l_list) and l_list[i] is not None else c_list[i]),
+                                            "volume": int(v_list[i] if i < len(v_list) and v_list[i] is not None else 1),
+                                        })
+                                if parsed_bars:
+                                    bars = parsed_bars
+                except Exception as e:
+                    logger.debug(f"[WARMUP YAHOO] Could not fetch Yahoo chart for {sym} ({ysym}): {e}")
+
+            if not bars:
+                continue
+
+            # 3. Compute indicators from bars
+            closes = [b["close"] for b in bars]
+            highs = [b["high"] for b in bars]
+            lows = [b["low"] for b in bars]
+            volumes = [b.get("volume", 1) for b in bars]
+            n = len(closes)
+            if n == 0:
+                continue
+
+            alpha_200 = 2.0 / (200 + 1)
+            alpha_20 = 2.0 / (20 + 1)
+            alpha_atr = 1.0 / 14.0
+
+            ema_200 = float(closes[0])
+            ema_20 = float(closes[0])
+            atr_14 = float(highs[0] - lows[0])
+            prev_c = float(closes[0])
+
+            for i in range(1, n):
+                c = float(closes[i])
+                h = float(highs[i])
+                l = float(lows[i])
+                ema_200 = c * alpha_200 + ema_200 * (1.0 - alpha_200)
+                ema_20 = c * alpha_20 + ema_20 * (1.0 - alpha_20)
+                tr = max(h - l, abs(h - prev_c), abs(l - prev_c))
+                atr_14 = atr_14 * (1.0 - alpha_atr) + tr * alpha_atr
+                prev_c = c
+
+            avg_vol = float(sum(volumes) / n) if n > 0 else 1000.0
+
+            # 4. Seed TimeframeState
+            for tf in self.timeframes:
+                st = self.get_state(sym, tf)
+                st.ema_200 = round(ema_200, 2)
+                st.ema_20 = round(ema_20, 2)
+                st.atr_14 = round(atr_14, 2)
+                st.prev_close = round(prev_c, 2)
+                st.rvol_baselines["DEFAULT"] = round(avg_vol, 1)
+
+            warmed[sym] = {
+                "ema_200": round(ema_200, 2),
+                "ema_20": round(ema_20, 2),
+                "atr_14": round(atr_14, 2),
+                "prev_close": round(prev_c, 2),
+                "bars_loaded": n,
+                "source": "live_history",
+            }
+
+            # 5. Optionally save to parquet cache
+            if save_to_parquet and store_path.exists():
+                try:
+                    df = pl.DataFrame({
+                        "close": closes,
+                        "high": highs,
+                        "low": lows,
+                        "volume": volumes,
+                    })
+                    parquet_target = store_path / f"{sym}_1m.parquet"
+                    df.write_parquet(parquet_target)
+                except Exception as e:
+                    logger.debug(f"[WARMUP] Could not write cached parquet for {sym}: {e}")
+
+        logger.info(f"[LIVE HISTORY COMPLETE] Pre-warmed {len(warmed)} instruments via live history")
         return warmed
 
     def _get_bucket_start_time(self, dt: datetime, timeframe: Timeframe) -> datetime:

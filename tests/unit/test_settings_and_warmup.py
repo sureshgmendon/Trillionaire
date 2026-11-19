@@ -8,6 +8,7 @@ import os
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 from fastapi.testclient import TestClient
@@ -205,6 +206,11 @@ def test_100_stock_universe_and_profiles():
         profiles_data = json.load(f)
 
     assert len(profiles_data) == 100, f"Expected 100 profiles in stock_profiles.json, found {len(profiles_data)}"
+    profile_syms = {p["tradingsymbol"] for p in profiles_data}
+    assert "UNITDSPR" in profile_syms, "Renamed symbol UNITDSPR must be present in stock_profiles.json"
+    assert "LTM" in profile_syms, "Renamed symbol LTM must be present in stock_profiles.json"
+    assert "MCDOWELL-N" not in profile_syms, "Legacy symbol MCDOWELL-N must not be in stock_profiles.json"
+    assert "LTIM" not in profile_syms, "Legacy symbol LTIM must not be in stock_profiles.json"
 
 
 # ==============================================================================
@@ -289,9 +295,101 @@ async def test_strategy_runner_funnel_metrics(mock_engine_and_client):
     assert "funnel_metrics" in body
     assert body["funnel_metrics"]["candles_evaluated"] >= 1
 
-    # Verify status API exposes funnel_metrics
+
+def test_warmup_from_live_history_when_data_store_empty(tmp_path: Path):
+    """
+    Verifies that when research_lab/data_store is empty or missing,
+    CandleAggregator automatically falls back to live history retrieval (via Kite or Yahoo)
+    and seeds EMA(200), EMA(20), ATR(14), and RVOL baselines.
+    """
+    bus = EventBus()
+    agg = CandleAggregator(event_bus=bus)
+    empty_store = tmp_path / "empty_store"
+    empty_store.mkdir()
+
+    # Mock Kite historical data
+    mock_kite = MagicMock()
+    mock_kite.historical_data.return_value = [
+        {"date": "2026-03-01 09:15:00", "open": 2500.0, "high": 2510.0, "low": 2490.0, "close": 2505.0, "volume": 10000},
+        {"date": "2026-03-01 09:20:00", "open": 2505.0, "high": 2515.0, "low": 2500.0, "close": 2510.0, "volume": 12000},
+        {"date": "2026-03-01 09:25:00", "open": 2510.0, "high": 2520.0, "low": 2505.0, "close": 2518.0, "volume": 15000},
+    ]
+
+    mock_sync = MagicMock()
+    mock_sync.get_token.return_value = 738561
+
+    warmed = agg.warmup_from_parquet(
+        symbols=["RELIANCE"],
+        data_dir=empty_store,
+        kite_client=mock_kite,
+        instrument_sync=mock_sync,
+        fetch_live_fallback=True,
+    )
+
+    assert "RELIANCE" in warmed
+    assert warmed["RELIANCE"]["source"] == "live_history"
+    assert warmed["RELIANCE"]["ema_200"] > 0
+    assert warmed["RELIANCE"]["ema_20"] > 0
+    assert warmed["RELIANCE"]["atr_14"] > 0
+    assert warmed["RELIANCE"]["prev_close"] == 2518.0
+
+    # Verify state in aggregator
+    m5_state = agg.get_state("RELIANCE", Timeframe.M5)
+    assert m5_state.ema_200 > 0
+    assert m5_state.rvol_baselines["DEFAULT"] > 0
+
+
+@pytest.mark.asyncio
+async def test_live_m5_candle_close_increments_funnel_eval_on_boot(mock_engine_and_client):
+    """
+    Verifies that upon premarket boot and the very first live M5 candle close,
+    LiveStrategyRunner increments funnel_metrics["candles_evaluated"] immediately.
+    """
+    engine, client, bus, runner, _ = mock_engine_and_client
+
+    # Profile for RELIANCE
+    profile = StockProfile(
+        tradingsymbol="RELIANCE",
+        instrument_token=738561,
+        parent_index="NIFTY ENERGY",
+        index_token=260105,
+        cluster_regime=ClusterRegime.TREND_MOMENTUM,
+        beta_5y=1.15,
+        adr_pct=2.45,
+        atr_multiplier_sl=1.5,
+        atr_multiplier_tp=3.0,
+        min_rvol_threshold=1.5,
+        oos_sharpe=1.65,
+        oos_profit_factor=1.85,
+        is_active=True,
+    )
+    runner.profiles["RELIANCE"] = profile
+
+    initial_eval = runner.funnel_metrics["candles_evaluated"]
+
+    # Construct and publish an M5 candle close event
+    from trading_engine.core.event_bus import CandleCloseEvent
+    m5_candle = Candle(
+        tradingsymbol="RELIANCE",
+        timeframe=Timeframe.M5,
+        timestamp_ist=datetime.now(IST_TZ),
+        open=2500.0,
+        high=2520.0,
+        low=2495.0,
+        close=2515.0,
+        volume=25000,
+        vwap=2510.0,
+        ema_200=2490.0,
+        atr_14=15.0,
+        rvol=1.8,
+    )
+    await bus.publish(CandleCloseEvent(candle=m5_candle))
+
+    # Funnel evaluated count must have incremented
+    assert runner.funnel_metrics["candles_evaluated"] == initial_eval + 1
+
+    # Verify status API exposes updated funnel_metrics
     resp = client.get("/api/v1/status")
     assert resp.status_code == 200
-    body = resp.json()
-    assert "funnel_metrics" in body
-    assert body["funnel_metrics"]["candles_evaluated"] >= 1
+    status_data = resp.json()
+    assert status_data["funnel_metrics"]["candles_evaluated"] >= 1

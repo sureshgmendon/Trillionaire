@@ -285,7 +285,7 @@
     "is_active": true
   },
   {
-    "tradingsymbol": "LTIM",
+    "tradingsymbol": "LTM",
     "instrument_token": 4575233,
     "parent_index": "NIFTY IT",
     "index_token": 259849,
@@ -1110,7 +1110,7 @@
     "is_active": true
   },
   {
-    "tradingsymbol": "MCDOWELL-N",
+    "tradingsymbol": "UNITDSPR",
     "instrument_token": 2672641,
     "parent_index": "NIFTY FMCG",
     "index_token": 261889,

@@ -36,6 +36,13 @@ USER_AGENTS = (
 )
 
 
+YAHOO_SYMBOL_OVERRIDES: Dict[str, str] = {
+    "TATAMOTORS": "TMCV.NS",
+    "LTIM": "LTM.NS",
+    "MCDOWELL-N": "UNITDSPR.NS",
+}
+
+
 class FreeLiveMarketFeeder:
     """
     Zero-cost asynchronous market data feeder for live NSE equities and sector indices.
@@ -91,7 +98,7 @@ class FreeLiveMarketFeeder:
                     token = stock["instrument_token"]
                     self.tracked_symbols[sym] = {
                         "token": token,
-                        "yahoo_symbol": f"{sym}.NS",
+                        "yahoo_symbol": YAHOO_SYMBOL_OVERRIDES.get(sym, f"{sym}.NS"),
                         "is_index": False,
                     }
             except Exception as e:

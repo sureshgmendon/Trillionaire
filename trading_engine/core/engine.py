@@ -17,8 +17,8 @@ from loguru import logger
 from config.settings import settings
 from sentinel.orchestrator import SentinelOrchestrator
 from shared.constants import IST_TZ
-from shared.enums import DataFeederType, TradingMode
-from shared.schemas import Signal
+from shared.enums import DataFeederType, Timeframe, TradingMode
+from shared.schemas import Candle, Signal
 
 from trading_engine.brokers.kite.auth import KiteAuthManager
 from trading_engine.brokers.kite.instruments import InstrumentSync
@@ -176,14 +176,39 @@ class TrillionaireEngine:
         # 4. Reload Stock Profiles
         self.strategy_runner.load_profiles_from_disk()
 
-        # 5. Morning Indicator Warmup from Parquet
+        # 5. Morning Indicator Warmup from Parquet with Live History Fallback
+        kite_client = None
+        if self.auth_manager is not None:
+            try:
+                kite_client = self.auth_manager.get_kite_client()
+            except Exception:
+                pass
+
         warmed = self.candle_aggregator.warmup_from_parquet(
-            symbols=list(self.strategy_runner.profiles.keys())
+            symbols=list(self.strategy_runner.profiles.keys()),
+            kite_client=kite_client,
+            instrument_sync=self.instrument_sync,
         )
-        # Seed parent index EMA(20) into strategy runner
+        # Seed parent index EMA(20) and baseline M5 candle into strategy runner
         for sym, metrics in warmed.items():
             if "NIFTY" in sym:
                 self.strategy_runner.seed_index_ema_20(sym, metrics.get("ema_20", 0.0))
+                if "prev_close" in metrics:
+                    c = metrics["prev_close"]
+                    self.strategy_runner._latest_candles[(sym, Timeframe.M5)] = Candle(
+                        tradingsymbol=sym,
+                        timeframe=Timeframe.M5,
+                        timestamp_ist=datetime.now(IST_TZ),
+                        open=c,
+                        high=c,
+                        low=c,
+                        close=c,
+                        volume=1000,
+                        vwap=c,
+                        ema_200=metrics.get("ema_200", c),
+                        atr_14=metrics.get("atr_14", 1.0),
+                        rvol=1.0,
+                    )
 
         self.is_booted = True
         logger.info(
