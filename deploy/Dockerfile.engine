@@ -39,6 +39,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     libpq5 \
     ca-certificates \
+    gosu \
     && ln -fs /usr/share/zoneinfo/Asia/Kolkata /etc/localtime \
     && echo "Asia/Kolkata" > /etc/timezone \
     && dpkg-reconfigure --frontend noninteractive tzdata \
@@ -67,7 +68,9 @@ RUN mkdir -p /opt/trillionaire/logs \
                  /opt/trillionaire/research_lab/data_store \
                  /opt/trillionaire/sentinel/artifacts
 
-USER trillionaire
+# Install container entrypoint script
+COPY deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
 # Expose FastAPI REST / WS telemetry port
 EXPOSE 8000
@@ -76,4 +79,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=3 \
     CMD curl -f http://localhost:8000/api/v1/health || exit 1
 
-CMD ["uvicorn", "api_bridge.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--access-log"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["uvicorn", "api_bridge.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--access-log"]

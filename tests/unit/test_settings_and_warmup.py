@@ -485,6 +485,43 @@ async def test_replay_exception_returns_structured_json_500(mock_engine_and_clie
             assert "Disk I/O failure simulated" in err_data["detail"]
 
 
+@pytest.mark.asyncio
+async def test_replay_permission_denied_falls_back_to_writable_dir(mock_engine_and_client, tmp_path):
+    """
+    Verifies that when preferred data_dir raises PermissionError (simulating host volume UID mismatch),
+    the system automatically falls back to /tmp/trillionaire_data_store, generates files, and replays cleanly.
+    """
+    engine, client, _, _, _ = mock_engine_and_client
+    admin_key = settings.trillionaire_admin_key
+
+    read_only_dir = tmp_path / "read_only_store"
+    fallback_dir = tmp_path / "fallback_store"
+    fallback_dir.mkdir(parents=True, exist_ok=True)
+
+    orig_access = os.access
+
+    def mock_access(path, mode, *args, **kwargs):
+        if str(read_only_dir) in str(path):
+            return False
+        return orig_access(path, mode, *args, **kwargs)
+
+    with patch("api_bridge.routes.engine_control.DATA_STORE_DIR", read_only_dir):
+        with patch("api_bridge.routes.engine_control.FALLBACK_DATA_STORE_DIR", fallback_dir):
+            with patch("research_lab.data_loader.synthetic_generator.FALLBACK_DATA_STORE_DIR", fallback_dir):
+                with patch("trading_engine.data.tick_replayer.FALLBACK_DATA_STORE_DIR", fallback_dir):
+                    with patch("os.access", side_effect=mock_access):
+                        resp = client.post(
+                            "/api/v1/control/replay",
+                            headers={"X-API-Key": admin_key},
+                            json={"speed": "MAX_SPEED", "symbols": ["RELIANCE"]},
+                        )
+                        assert resp.status_code == 200, f"Expected 200 OK, got {resp.status_code}: {resp.text}"
+                        data = resp.json()
+                        assert data["status"] == "completed"
+                        assert data["ticks_replayed"] > 0
+                        assert (fallback_dir / "RELIANCE_1m.parquet").exists()
+
+
 def test_warmup_from_live_history_210_bars(tmp_path: Path):
     """
     Validates warmup_from_live_history with 220 bars to ensure full EMA(200) warmup on Bar #1.

@@ -7,6 +7,8 @@ Generates realistic multi-year 1-minute historical datasets incorporating:
 - High >= max(Open, Close) and Low <= min(Open, Close) consistency
 """
 
+import os
+import tempfile
 from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -19,7 +21,14 @@ from config.settings import settings
 from shared.constants import IST_TZ
 
 DATA_STORE_DIR = Path(__file__).resolve().parent.parent / "data_store"
-DATA_STORE_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    DATA_STORE_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
+
+FALLBACK_DATA_STORE_DIR = (
+    Path("/tmp/trillionaire_data_store") if os.name != "nt" else Path(tempfile.gettempdir()) / "trillionaire_data_store"
+)
 
 # NSE Intraday trading day specs: 09:15 to 15:30 = 375 minutes
 MINUTES_PER_DAY = 375
@@ -58,11 +67,30 @@ class SyntheticDataGenerator:
     """Vectorized generator of realistic correlated intraday equity datasets."""
 
     def __init__(self, data_dir: Path = DATA_STORE_DIR, seed: int = 42):
-        self.data_dir = data_dir
-        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.data_dir = self._resolve_writable_dir(data_dir)
         self.rng = np.random.default_rng(seed)
         self.vol_profile = generate_intraday_volatility_profile()
         self.vol_curve = generate_intraday_volume_profile()
+
+    @classmethod
+    def _resolve_writable_dir(cls, preferred_dir: Path) -> Path:
+        """Ensures the directory is writable, falling back to FALLBACK_DATA_STORE_DIR if permissions are denied."""
+        try:
+            preferred_dir.mkdir(parents=True, exist_ok=True)
+            if not os.access(preferred_dir, os.W_OK):
+                raise PermissionError(f"Directory {preferred_dir} is not writable (os.W_OK is False)")
+            probe = preferred_dir / ".perm_check"
+            probe.touch(exist_ok=True)
+            probe.unlink(missing_ok=True)
+            return preferred_dir
+        except (PermissionError, OSError) as e:
+            fallback = FALLBACK_DATA_STORE_DIR
+            fallback.mkdir(parents=True, exist_ok=True)
+            logger.warning(
+                f"[SYNTHETIC GENERATOR] Directory {preferred_dir} is not writable ({e}). "
+                f"Falling back to {fallback}."
+            )
+            return fallback
 
     def get_parquet_path(self, symbol: str) -> Path:
         clean_symbol = symbol.replace(":", "_").replace(" ", "_")

@@ -5,6 +5,8 @@ chronologically onto the EventBus at configurable speeds (1x, 10x, 50x, MAX_SPEE
 """
 
 import asyncio
+import os
+import tempfile
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -13,6 +15,7 @@ import polars as pl
 
 from config.settings import settings
 from research_lab.data_loader.kite_history import DATA_STORE_DIR
+from research_lab.data_loader.synthetic_generator import FALLBACK_DATA_STORE_DIR
 from shared.constants import IST_TZ
 from shared.schemas import Tick
 from trading_engine.core.event_bus import EventBus, TickEvent, bus
@@ -27,8 +30,25 @@ class HistoricalTickReplayer:
         data_dir: Path = DATA_STORE_DIR,
     ):
         self.bus = event_bus or bus
-        self.data_dir = data_dir
+        self.data_dir = self._resolve_data_dir(data_dir)
         self._load_instrument_metadata()
+
+    @staticmethod
+    def _resolve_data_dir(preferred_dir: Path) -> Path:
+        """Resolves preferred data directory or falls back to /tmp/trillionaire_data_store if preferred is unreadable or has no parquets."""
+        if preferred_dir.exists():
+            try:
+                if list(preferred_dir.glob("*.parquet")):
+                    return preferred_dir
+            except Exception:
+                pass
+        if FALLBACK_DATA_STORE_DIR.exists():
+            try:
+                if list(FALLBACK_DATA_STORE_DIR.glob("*.parquet")):
+                    return FALLBACK_DATA_STORE_DIR
+            except Exception:
+                pass
+        return preferred_dir
 
     def _load_instrument_metadata(self) -> None:
         """Loads instrument tokens for universe stocks and benchmark indices."""
@@ -48,6 +68,12 @@ class HistoricalTickReplayer:
             self.data_dir / f"{symbol}_1m.parquet",
             self.data_dir / f"{symbol.replace('-', '_')}_1m.parquet",
         ]
+        if FALLBACK_DATA_STORE_DIR.exists() and FALLBACK_DATA_STORE_DIR != self.data_dir:
+            candidates.extend([
+                FALLBACK_DATA_STORE_DIR / f"{clean}_1m.parquet",
+                FALLBACK_DATA_STORE_DIR / f"{symbol}_1m.parquet",
+                FALLBACK_DATA_STORE_DIR / f"{symbol.replace('-', '_')}_1m.parquet",
+            ])
         for c in candidates:
             if c.exists():
                 return c

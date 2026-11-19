@@ -58,6 +58,7 @@ services:
       - ../.env:/opt/trillionaire/.env
       - ../research_lab/artifacts:/opt/trillionaire/research_lab/artifacts
       - ../research_lab/data_store:/opt/trillionaire/research_lab/data_store
+      - ../sentinel/artifacts:/opt/trillionaire/sentinel/artifacts
     depends_on:
       redis:
         condition: service_healthy

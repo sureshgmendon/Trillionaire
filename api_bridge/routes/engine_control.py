@@ -9,6 +9,8 @@ Provides HTTP endpoints for operator dashboard telemetry, diagnostics, and emerg
 """
 
 import asyncio
+import os
+import tempfile
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -17,11 +19,39 @@ from pydantic import BaseModel, Field
 from loguru import logger
 
 from config.settings import settings
-from research_lab.data_loader.synthetic_generator import DATA_STORE_DIR, SyntheticDataGenerator
+from research_lab.data_loader.synthetic_generator import DATA_STORE_DIR, FALLBACK_DATA_STORE_DIR, SyntheticDataGenerator
 from shared.constants import IST_TZ
 from shared.enums import TradingMode
 from trading_engine.core.engine import TrillionaireEngine
 from trading_engine.data.tick_replayer import HistoricalTickReplayer
+
+FALLBACK_DATA_STORE_DIR = (
+    Path("/tmp/trillionaire_data_store") if os.name != "nt" else Path(tempfile.gettempdir()) / "trillionaire_data_store"
+)
+
+
+def get_writable_data_store_dir(preferred_dir: Path = DATA_STORE_DIR) -> Path:
+    """
+    Returns preferred_dir if it is writable.
+    If not writable (e.g. host-mounted Docker volume owned by host UID),
+    automatically falls back to /tmp/trillionaire_data_store.
+    """
+    try:
+        preferred_dir.mkdir(parents=True, exist_ok=True)
+        if not os.access(preferred_dir, os.W_OK):
+            raise PermissionError(f"Directory {preferred_dir} is not writable (os.W_OK is False)")
+        probe = preferred_dir / ".perm_check"
+        probe.touch(exist_ok=True)
+        probe.unlink(missing_ok=True)
+        return preferred_dir
+    except (PermissionError, OSError) as e:
+        logger.warning(
+            f"[DATA STORE PERMISSION] {preferred_dir} is not writable ({e}). "
+            f"Falling back to {FALLBACK_DATA_STORE_DIR}."
+        )
+        FALLBACK_DATA_STORE_DIR.mkdir(parents=True, exist_ok=True)
+        return FALLBACK_DATA_STORE_DIR
+
 
 router = APIRouter(prefix="", tags=["Engine Control & Telemetry"])
 
@@ -184,22 +214,25 @@ def _is_missing_parquets(data_dir: Path, symbols: Optional[List[str]]) -> bool:
     return False
 
 
-def _generate_synthetic_universe_sync(data_dir: Path, symbols: Optional[List[str]] = None, num_days: int = 30) -> None:
+def _generate_synthetic_universe_sync(data_dir: Path, symbols: Optional[List[str]] = None, num_days: int = 30) -> Path:
     """Synchronous generator executed safely in a worker thread via asyncio.to_thread."""
-    data_dir.mkdir(parents=True, exist_ok=True)
-    generator = SyntheticDataGenerator(data_dir=data_dir)
+    target_dir = get_writable_data_store_dir(data_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    generator = SyntheticDataGenerator(data_dir=target_dir)
+    target_dir = generator.data_dir
     generator.generate_all_sector_universe(num_days=num_days)
 
     if symbols:
         for sym in symbols:
             clean = sym.replace(":", "_").replace(" ", "_")
-            p_path = data_dir / f"{clean}_1m.parquet"
+            p_path = target_dir / f"{clean}_1m.parquet"
             if not p_path.exists():
                 generator.generate_correlated_stock_series(
                     tradingsymbol=sym,
                     parent_index_symbol="NIFTY 50",
                     num_days=num_days,
                 )
+    return target_dir
 
 
 @router.post("/control/replay", dependencies=[Depends(verify_admin_api_key)])
@@ -213,12 +246,15 @@ async def start_historical_replay(
     Requires X-API-Key header.
     """
     try:
+        # Resolve writable data directory (falls back to /tmp/trillionaire_data_store if permissions denied)
+        effective_data_dir = get_writable_data_store_dir(DATA_STORE_DIR)
+
         # Check if parquet dataset is missing or incomplete
-        if _is_missing_parquets(DATA_STORE_DIR, req.symbols):
+        if _is_missing_parquets(effective_data_dir, req.symbols):
             logger.warning(
-                f"[REPLAY AUTO-SEED] Parquet datasets missing in {DATA_STORE_DIR}. Auto-generating 30-day synthetic universe via worker thread..."
+                f"[REPLAY AUTO-SEED] Parquet datasets missing in {effective_data_dir}. Auto-generating 30-day synthetic universe via worker thread..."
             )
-            await asyncio.to_thread(_generate_synthetic_universe_sync, DATA_STORE_DIR, req.symbols, 30)
+            effective_data_dir = await asyncio.to_thread(_generate_synthetic_universe_sync, effective_data_dir, req.symbols, 30)
 
         target_date: Optional[date] = None
         if req.trading_date:
@@ -230,7 +266,7 @@ async def start_historical_replay(
                     detail=f"Invalid trading_date format '{req.trading_date}', expected YYYY-MM-DD",
                 )
 
-        replayer = HistoricalTickReplayer(event_bus=engine.bus, data_dir=DATA_STORE_DIR)
+        replayer = HistoricalTickReplayer(event_bus=engine.bus, data_dir=effective_data_dir)
         logger.info(f"[API CONTROL] Starting replay on {target_date or 'latest'} at {req.speed}...")
 
         total_ticks = await replayer.replay_session(
