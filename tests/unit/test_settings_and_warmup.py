@@ -426,29 +426,63 @@ async def test_engine_start_runs_boot_premarket_every_time(mock_engine_and_clien
 @pytest.mark.asyncio
 async def test_replay_auto_seeds_when_datastore_empty(mock_engine_and_client, tmp_path):
     """
-    Verifies that POST /control/replay auto-generates 30 days of synthetic data
-    when research_lab/data_store has no parquet files.
+    Verifies that POST /api/v1/control/replay with an empty temporary data_store directory
+    auto-generates synthetic Parquet files via worker thread, returns HTTP 200 valid JSON,
+    and replays > 0 ticks cleanly without blocking the event loop.
     """
     engine, client, _, _, _ = mock_engine_and_client
     admin_key = settings.trillionaire_admin_key
 
-    generated_called = False
+    # Ensure tmp_path is completely empty
+    empty_dir = tmp_path / "empty_store"
+    empty_dir.mkdir(parents=True, exist_ok=True)
+    assert len(list(empty_dir.glob("*.parquet"))) == 0
 
-    def mock_generate(self, num_days=30):
-        nonlocal generated_called
-        generated_called = True
-        assert num_days == 30
+    with patch("api_bridge.routes.engine_control.DATA_STORE_DIR", empty_dir):
+        with patch("trading_engine.data.tick_replayer.DATA_STORE_DIR", empty_dir):
+            resp = client.post(
+                "/api/v1/control/replay",
+                headers={"X-API-Key": admin_key},
+                json={"speed": "MAX_SPEED", "symbols": ["RELIANCE"]},
+            )
+            assert resp.status_code == 200, f"Expected 200 OK, got {resp.status_code}: {resp.text}"
+            
+            # Response must be valid JSON
+            data = resp.json()
+            assert data["status"] == "completed"
+            assert data["speed"] == "MAX_SPEED"
+            assert data["ticks_replayed"] > 0
+            assert "timestamp_ist" in data
 
-    with patch("research_lab.data_loader.synthetic_generator.SyntheticDataGenerator.generate_all_sector_universe", mock_generate):
-        with patch("trading_engine.data.tick_replayer.HistoricalTickReplayer.replay_session", return_value=100):
-            with patch("research_lab.data_loader.synthetic_generator.DATA_STORE_DIR", tmp_path):
-                resp = client.post(
-                    "/api/v1/control/replay",
-                    headers={"X-API-Key": admin_key},
-                    json={"speed": "MAX_SPEED"},
-                )
-                assert resp.status_code == 200
-                assert generated_called is True, "Replay must auto-generate synthetic data when store is empty"
+            # Confirm Parquet files were actually generated on disk in empty_dir
+            generated_parquets = list(empty_dir.glob("*.parquet"))
+            assert len(generated_parquets) > 0, "Synthetic parquet files must exist on disk"
+            assert (empty_dir / "RELIANCE_1m.parquet").exists()
+
+
+@pytest.mark.asyncio
+async def test_replay_exception_returns_structured_json_500(mock_engine_and_client, tmp_path):
+    """
+    Verifies that any unexpected error during replay is wrapped in a structured
+    HTTPException(500) returning valid JSON with detail rather than raw plain text.
+    """
+    engine, client, _, _, _ = mock_engine_and_client
+    admin_key = settings.trillionaire_admin_key
+
+    with patch(
+        "api_bridge.routes.engine_control._generate_synthetic_universe_sync",
+        side_effect=RuntimeError("Disk I/O failure simulated"),
+    ):
+        with patch("api_bridge.routes.engine_control.DATA_STORE_DIR", tmp_path):
+            resp = client.post(
+                "/api/v1/control/replay",
+                headers={"X-API-Key": admin_key},
+                json={"speed": "MAX_SPEED"},
+            )
+            assert resp.status_code == 500
+            err_data = resp.json()
+            assert "detail" in err_data
+            assert "Disk I/O failure simulated" in err_data["detail"]
 
 
 def test_warmup_from_live_history_210_bars(tmp_path: Path):

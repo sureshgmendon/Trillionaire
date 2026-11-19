@@ -235,8 +235,15 @@ export function useTrillionaireStream() {
           const data = await resp.json();
           return { success: true, message: `Replay completed: ${data.ticks_replayed} ticks replayed.` };
         } else {
-          const err = await resp.json();
-          return { success: false, message: err.detail || "Replay trigger failed" };
+          let errorMsg = "Replay trigger failed";
+          try {
+            const err = await resp.json();
+            errorMsg = err.detail || errorMsg;
+          } catch {
+            const text = await resp.text();
+            errorMsg = text || `HTTP ${resp.status} ${resp.statusText}`;
+          }
+          return { success: false, message: errorMsg };
         }
       } catch (e: any) {
         return { success: false, message: e.message || "Network error" };

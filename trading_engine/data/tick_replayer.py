@@ -43,6 +43,14 @@ class HistoricalTickReplayer:
 
     def _get_parquet_path(self, symbol: str) -> Path:
         clean = symbol.replace(":", "_").replace(" ", "_")
+        candidates = [
+            self.data_dir / f"{clean}_1m.parquet",
+            self.data_dir / f"{symbol}_1m.parquet",
+            self.data_dir / f"{symbol.replace('-', '_')}_1m.parquet",
+        ]
+        for c in candidates:
+            if c.exists():
+                return c
         return self.data_dir / f"{clean}_1m.parquet"
 
     def synthesize_ticks_for_bar(
@@ -137,8 +145,22 @@ class HistoricalTickReplayer:
         all_instruments = list(symbols) + list(needed_indices)
         all_ticks: List[Tick] = []
 
+        # Determine consistent replay date across instruments if not provided
+        effective_date = trading_date
+        if effective_date is None:
+            for sym in all_instruments:
+                p_path = self._get_parquet_path(sym)
+                if p_path.exists():
+                    try:
+                        sample_df = pl.read_parquet(p_path)
+                        if len(sample_df) > 0:
+                            effective_date = sample_df["timestamp"][-1].date()
+                            break
+                    except Exception:
+                        continue
+
         logger.info(
-            f"Loading session data for {len(all_instruments)} instruments on {trading_date or 'latest'}..."
+            f"Loading session data for {len(all_instruments)} instruments on {effective_date or 'latest'}..."
         )
 
         for sym in all_instruments:
@@ -151,11 +173,19 @@ class HistoricalTickReplayer:
             if len(df) == 0:
                 continue
 
-            # Filter for specific date if provided
-            if trading_date is not None:
-                df = df.filter(pl.col("timestamp").dt.date() == trading_date)
+            # Filter for specific date if provided or resolved
+            if effective_date is not None:
+                filtered_df = df.filter(pl.col("timestamp").dt.date() == effective_date)
+                if len(filtered_df) > 0:
+                    df = filtered_df
+                else:
+                    # Fallback to the latest date available in this file
+                    fallback_date = df["timestamp"][-1].date()
+                    logger.warning(
+                        f"Replay date {effective_date} not found for {sym}. Falling back to {fallback_date}."
+                    )
+                    df = df.filter(pl.col("timestamp").dt.date() == fallback_date)
             else:
-                # Default to the first available date in dataset
                 first_date = df["timestamp"][0].date()
                 df = df.filter(pl.col("timestamp").dt.date() == first_date)
 

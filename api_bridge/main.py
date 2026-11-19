@@ -7,8 +7,9 @@ Coordinates REST telemetry, operator control commands, and live WebSocket broadc
 """
 
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from loguru import logger
 
 from api_bridge.routes.engine_control import router as control_router, set_engine
@@ -92,6 +93,16 @@ app.add_middleware(
 app.include_router(health_router, prefix="/api/v1")
 app.include_router(control_router, prefix="/api/v1")
 app.include_router(settings_router, prefix="/api/v1")
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Ensures unhandled server errors always return structured JSON with detail message."""
+    logger.error(f"[SERVER ERROR 500] Unhandled exception on {request.method} {request.url.path}: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal Server Error: {str(exc)}"},
+    )
 
 
 @app.websocket("/ws/stream")

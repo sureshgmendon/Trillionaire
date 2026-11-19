@@ -8,13 +8,16 @@ Provides HTTP endpoints for operator dashboard telemetry, diagnostics, and emerg
 5. POST /control/replay: Offline historical session simulation replay (Admin Protected).
 """
 
+import asyncio
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from loguru import logger
 
 from config.settings import settings
+from research_lab.data_loader.synthetic_generator import DATA_STORE_DIR, SyntheticDataGenerator
 from shared.constants import IST_TZ
 from shared.enums import TradingMode
 from trading_engine.core.engine import TrillionaireEngine
@@ -161,6 +164,44 @@ async def trigger_emergency_kill_switch(
     }
 
 
+def _is_missing_parquets(data_dir: Path, symbols: Optional[List[str]]) -> bool:
+    """Checks whether data_dir has no parquets or is missing requested symbols."""
+    if not data_dir.exists():
+        return True
+    parquet_files = list(data_dir.glob("*.parquet"))
+    if not parquet_files:
+        return True
+    check_syms = symbols if symbols else settings.get_tracked_symbols()[:5]
+    for sym in check_syms:
+        clean = sym.replace(":", "_").replace(" ", "_")
+        candidates = [
+            data_dir / f"{clean}_1m.parquet",
+            data_dir / f"{sym}_1m.parquet",
+            data_dir / f"{sym.replace('-', '_')}_1m.parquet",
+        ]
+        if not any(c.exists() for c in candidates):
+            return True
+    return False
+
+
+def _generate_synthetic_universe_sync(data_dir: Path, symbols: Optional[List[str]] = None, num_days: int = 30) -> None:
+    """Synchronous generator executed safely in a worker thread via asyncio.to_thread."""
+    data_dir.mkdir(parents=True, exist_ok=True)
+    generator = SyntheticDataGenerator(data_dir=data_dir)
+    generator.generate_all_sector_universe(num_days=num_days)
+
+    if symbols:
+        for sym in symbols:
+            clean = sym.replace(":", "_").replace(" ", "_")
+            p_path = data_dir / f"{clean}_1m.parquet"
+            if not p_path.exists():
+                generator.generate_correlated_stock_series(
+                    tradingsymbol=sym,
+                    parent_index_symbol="NIFTY 50",
+                    num_days=num_days,
+                )
+
+
 @router.post("/control/replay", dependencies=[Depends(verify_admin_api_key)])
 async def start_historical_replay(
     req: ReplayRequest,
@@ -168,36 +209,48 @@ async def start_historical_replay(
 ) -> Dict[str, Any]:
     """
     Starts an offline historical session replay onto EventBus for dashboard visual validation.
+    Auto-seeds realistic correlated synthetic Parquet files if data_store is empty or missing symbols.
     Requires X-API-Key header.
     """
-    from research_lab.data_loader.synthetic_generator import DATA_STORE_DIR, SyntheticDataGenerator
+    try:
+        # Check if parquet dataset is missing or incomplete
+        if _is_missing_parquets(DATA_STORE_DIR, req.symbols):
+            logger.warning(
+                f"[REPLAY AUTO-SEED] Parquet datasets missing in {DATA_STORE_DIR}. Auto-generating 30-day synthetic universe via worker thread..."
+            )
+            await asyncio.to_thread(_generate_synthetic_universe_sync, DATA_STORE_DIR, req.symbols, 30)
 
-    parquet_files = list(DATA_STORE_DIR.glob("*.parquet")) if DATA_STORE_DIR.exists() else []
-    if not parquet_files:
-        logger.warning(f"[REPLAY] No parquet files found in {DATA_STORE_DIR}. Auto-generating 30-day synthetic universe...")
-        generator = SyntheticDataGenerator(data_dir=DATA_STORE_DIR)
-        generator.generate_all_sector_universe(num_days=30)
+        target_date: Optional[date] = None
+        if req.trading_date:
+            try:
+                target_date = date.fromisoformat(req.trading_date)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid trading_date format '{req.trading_date}', expected YYYY-MM-DD",
+                )
 
-    target_date: Optional[date] = None
-    if req.trading_date:
-        try:
-            target_date = date.fromisoformat(req.trading_date)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid trading_date format, expected YYYY-MM-DD")
+        replayer = HistoricalTickReplayer(event_bus=engine.bus, data_dir=DATA_STORE_DIR)
+        logger.info(f"[API CONTROL] Starting replay on {target_date or 'latest'} at {req.speed}...")
 
-    replayer = HistoricalTickReplayer(event_bus=engine.bus)
-    logger.info(f"[API CONTROL] Starting replay on {target_date or 'latest'} at {req.speed}...")
+        total_ticks = await replayer.replay_session(
+            trading_date=target_date,
+            symbols=req.symbols,
+            speed=req.speed,
+        )
 
-    total_ticks = await replayer.replay_session(
-        trading_date=target_date,
-        symbols=req.symbols,
-        speed=req.speed,
-    )
-
-    return {
-        "status": "completed",
-        "trading_date": target_date.isoformat() if target_date else "latest",
-        "speed": req.speed,
-        "ticks_replayed": total_ticks,
-        "timestamp_ist": datetime.now(IST_TZ).isoformat(),
-    }
+        return {
+            "status": "completed",
+            "trading_date": target_date.isoformat() if target_date else "latest",
+            "speed": req.speed,
+            "ticks_replayed": total_ticks,
+            "timestamp_ist": datetime.now(IST_TZ).isoformat(),
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"[REPLAY FAILURE] Unhandled error during replay: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Replay execution failed: {str(exc)}",
+        )
