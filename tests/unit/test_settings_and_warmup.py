@@ -531,3 +531,45 @@ def test_warmup_from_live_history_210_bars(tmp_path: Path):
     assert st.ema_200 == warmed["RELIANCE"]["ema_200"]
     assert st.ema_20 == warmed["RELIANCE"]["ema_20"]
 
+
+def test_warmup_from_live_history_persists_decimal_index_parquet(tmp_path: Path):
+    """
+    Validates that warmup_from_live_history saves parquet cache with strict=False
+    and correctly handles decimal index values like NIFTY METAL 12750.3.
+    """
+    import polars as pl
+    bus = EventBus()
+    agg = CandleAggregator(event_bus=bus)
+
+    bars = [
+        {"open": 12740.25, "high": 12755.80, "low": 12735.10, "close": 12750.30, "volume": 150000},
+        {"open": 12750.30, "high": 12765.45, "low": 12745.00, "close": 12760.15, "volume": 180000},
+    ]
+
+    mock_kite = MagicMock()
+    mock_kite.historical_data.return_value = bars
+    mock_sync = MagicMock()
+    mock_sync.get_token.return_value = 261377
+
+    warmed = agg.warmup_from_live_history(
+        symbols=["NIFTY METAL"],
+        kite_client=mock_kite,
+        instrument_sync=mock_sync,
+        days=5,
+        save_to_parquet=True,
+        data_dir=tmp_path,
+    )
+
+    assert "NIFTY METAL" in warmed
+    assert warmed["NIFTY METAL"]["prev_close"] == 12760.15
+
+    # Verify parquet file was written and can be read cleanly
+    target_parquet = tmp_path / "NIFTY_METAL_1m.parquet"
+    assert target_parquet.exists()
+    df = pl.read_parquet(target_parquet)
+    assert len(df) == 2
+    assert df["close"].dtype == pl.Float64
+    assert df["volume"].dtype == pl.Int64
+    assert df["close"][0] == 12750.30
+
+

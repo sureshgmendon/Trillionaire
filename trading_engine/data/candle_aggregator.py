@@ -367,13 +367,26 @@ class CandleAggregator:
             # 5. Optionally save to parquet cache
             if save_to_parquet and store_path.exists():
                 try:
-                    df = pl.DataFrame({
-                        "close": closes,
-                        "high": highs,
-                        "low": lows,
-                        "volume": volumes,
-                    })
-                    parquet_target = store_path / f"{sym}_1m.parquet"
+                    opens = [float(b.get("open", b["close"])) for b in bars]
+                    clean_sym = sym.replace(":", "_").replace(" ", "_")
+                    df = pl.DataFrame(
+                        {
+                            "open": opens,
+                            "high": [float(h) for h in highs],
+                            "low": [float(l) for l in lows],
+                            "close": [float(c) for c in closes],
+                            "volume": [int(v) for v in volumes],
+                        },
+                        schema={
+                            "open": pl.Float64,
+                            "high": pl.Float64,
+                            "low": pl.Float64,
+                            "close": pl.Float64,
+                            "volume": pl.Int64,
+                        },
+                        strict=False,
+                    )
+                    parquet_target = store_path / f"{clean_sym}_1m.parquet"
                     df.write_parquet(parquet_target)
                 except Exception as e:
                     logger.debug(f"[WARMUP] Could not write cached parquet for {sym}: {e}")
