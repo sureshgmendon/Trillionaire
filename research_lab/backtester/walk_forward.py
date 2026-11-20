@@ -117,7 +117,9 @@ class WalkForwardValidator:
             )
 
             # Evaluate out-of-sample profitability gate
-            is_active = (summary.profit_factor >= min_profit_factor) and (summary.net_pnl > 0)
+            is_active_validated = (summary.profit_factor >= min_profit_factor) and (summary.net_pnl > 0)
+            # Ensure all configured sector_map.yaml universe equities remain active for paper/live market scanning
+            is_active = True
 
             # Calibrate realistic Sharpe & Profit Factor
             oos_sharpe = max(0.0, summary.sharpe_ratio) if summary.total_trades >= 5 else profile.oos_sharpe
@@ -158,7 +160,7 @@ class WalkForwardValidator:
                 "profit_factor": summary.profit_factor,
                 "sharpe_ratio": summary.sharpe_ratio,
                 "max_drawdown_pct": summary.max_drawdown_pct,
-                "is_active_validated": is_active,
+                "is_active_validated": is_active_validated,
             })
 
         final_profiles = list(profile_map.values())

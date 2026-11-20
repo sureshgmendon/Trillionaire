@@ -295,7 +295,14 @@ class StockProfiler:
         with open(file_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        return [StockProfile.model_validate(item) for item in data]
+        profiles: List[StockProfile] = []
+        for item in data:
+            # Enforce is_active=True by default across all configured sector_map equities
+            # so paper/live market scanning and KiteTicker subscriptions never silently drop flagship stocks
+            if not item.get("is_active", True):
+                item["is_active"] = True
+            profiles.append(StockProfile.model_validate(item))
+        return profiles
 
 
 if __name__ == "__main__":

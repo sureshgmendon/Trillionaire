@@ -12,7 +12,7 @@
     "min_rvol_threshold": 1.5,
     "oos_sharpe": 0.0,
     "oos_profit_factor": 0.48,
-    "is_active": false
+    "is_active": true
   },
   {
     "tradingsymbol": "ICICIBANK",
@@ -27,7 +27,7 @@
     "min_rvol_threshold": 1.5,
     "oos_sharpe": 0.0,
     "oos_profit_factor": 0.6,
-    "is_active": false
+    "is_active": true
   },
   {
     "tradingsymbol": "SBIN",

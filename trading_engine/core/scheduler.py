@@ -53,6 +53,9 @@ class WeekdayMarketScheduler:
             self._last_boot_date = today
             self._last_squareoff_date = today
             self._last_stop_date = today
+        elif now_ist.hour == 15 and now_ist.minute >= 15:
+            self._last_boot_date = today
+            self._last_squareoff_date = today
         elif getattr(self.engine, "is_booted", False) and (
             getattr(self.engine, "current_trade_date", None) == today or getattr(self.engine, "is_running", False)
         ):
