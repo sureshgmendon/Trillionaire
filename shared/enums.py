@@ -14,9 +14,13 @@ class TradingMode(str, Enum):
 
 
 class DataFeederType(str, Enum):
-    """Market data feeder source."""
-    FREE_LIVE = "FREE_LIVE"
+    """Market data feeder source - Strictly Zerodha Kite Connect WebSocket."""
     ZERODHA_KITE = "ZERODHA_KITE"
+
+    @classmethod
+    def _missing_(cls, value: object):
+        """Gracefully remap any legacy feeder values (e.g. FREE_LIVE) to ZERODHA_KITE."""
+        return cls.ZERODHA_KITE
 
 
 class ClusterRegime(str, Enum):

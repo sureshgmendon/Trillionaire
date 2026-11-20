@@ -75,6 +75,14 @@ class KiteBroker:
         """Assigns OrderManager for state reconciliation."""
         self.order_manager = om
 
+    def set_latest_tick(self, tick: Tick) -> None:
+        """Sets latest tick in memory cache and forwards to PaperBroker if paper trading."""
+        self.latest_ticks[tick.tradingsymbol] = tick
+        if self.order_manager is not None:
+            om_broker = getattr(self.order_manager, "broker", None)
+            if om_broker is not None and hasattr(om_broker, "set_latest_tick") and om_broker is not self:
+                om_broker.set_latest_tick(tick)
+
     # -------------------------------------------------------------------------
     # WebSocket KiteTicker Streaming & Event Normalization
     # -------------------------------------------------------------------------

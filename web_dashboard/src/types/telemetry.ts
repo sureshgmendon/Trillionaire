@@ -5,7 +5,7 @@
 
 export type TradingMode = "PAPER" | "LIVE" | "REPLAY";
 
-export type DataFeederType = "FREE_LIVE" | "ZERODHA_KITE";
+export type DataFeederType = "ZERODHA_KITE";
 
 export type ClusterRegime =
   | "TREND_MOMENTUM"

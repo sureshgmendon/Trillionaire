@@ -34,8 +34,8 @@ class Settings(BaseSettings):
     environment: str = Field(default="development", description="Environment: development, staging, production")
     trading_mode: TradingMode = Field(default=TradingMode.PAPER, description="PAPER, LIVE, or REPLAY")
     data_feeder: DataFeederType = Field(
-        default=DataFeederType.FREE_LIVE,
-        description="Market data feeder: FREE_LIVE (₹0 Yahoo/NSE Live Quotes) or ZERODHA_KITE",
+        default=DataFeederType.ZERODHA_KITE,
+        description="Sole market data feeder: ZERODHA_KITE (Zerodha Kite Connect WebSocket)",
     )
     active_capital_tier: str = Field(default="TIER_0_PAPER", description="Key for active tier in capital_tiers.yaml")
 

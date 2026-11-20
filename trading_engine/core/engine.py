@@ -33,7 +33,6 @@ from trading_engine.core.event_bus import (
 )
 from trading_engine.data.anomaly_detector import AnomalyDetector
 from trading_engine.data.candle_aggregator import CandleAggregator
-from trading_engine.data.free_live_feeder import FreeLiveMarketFeeder
 from trading_engine.execution.order_manager import OrderManager
 from trading_engine.execution.paper_broker import PaperBroker
 from trading_engine.risk.portfolio_risk import PortfolioRiskGatekeeper
@@ -57,12 +56,12 @@ class TrillionaireEngine:
         broker: Optional[Any] = None,
         auth_manager: Optional[KiteAuthManager] = None,
         instrument_sync: Optional[InstrumentSync] = None,
-        free_feeder: Optional[FreeLiveMarketFeeder] = None,
+        free_feeder: Optional[Any] = None,
     ):
         self.trading_mode = trading_mode or settings.trading_mode
-        self.data_feeder = data_feeder or getattr(settings, "data_feeder", DataFeederType.FREE_LIVE)
+        self.data_feeder = DataFeederType.ZERODHA_KITE
         self.bus = event_bus or bus
-        self.free_feeder = free_feeder
+        self.free_feeder = None
 
         # 1. Sentinel & Microstructure Guard
         self.sentinel = sentinel_orchestrator or SentinelOrchestrator()
@@ -83,7 +82,7 @@ class TrillionaireEngine:
             event_bus=self.bus,
         )
 
-        # 5. Broker Adapter (PaperBroker for PAPER/REPLAY with FREE_LIVE, KiteBroker for LIVE or ZERODHA_KITE)
+        # 5. Broker Adapter (PaperBroker for PAPER/REPLAY, KiteBroker for LIVE)
         if broker is not None:
             self.broker = broker
             self.auth_manager = auth_manager
@@ -125,11 +124,6 @@ class TrillionaireEngine:
 
         self._live_broker = self.broker
 
-        # Safety Lock on initialization:
-        if self.data_feeder == DataFeederType.FREE_LIVE and not isinstance(self.order_manager.broker, PaperBroker):
-            logger.warning("[SAFETY ENFORCED] FREE_LIVE feeder active: Order execution locked to PaperBroker.")
-            self.order_manager.broker = PaperBroker(event_bus=self.bus)
-
         # Attach OrderManager to KiteBroker if live
         if hasattr(self.broker, "set_order_manager") and callable(self.broker.set_order_manager):
             self.broker.set_order_manager(self.order_manager)
@@ -151,7 +145,7 @@ class TrillionaireEngine:
         """
         Executes pre-market startup sequence (08:30–08:45 AM IST):
         1. Unconditionally resets daily risk gatekeeper state, circuit breakers, and funnel metrics.
-        2. Resiliently handles Kite live authentication & instrument master sync (falls back to cache / FREE_LIVE on timeout).
+        2. Resiliently handles Kite live authentication & instrument master sync (falls back to cached instruments if login pending).
         3. Runs overnight news classification & calendar event blackouts via Sentinel.
         4. Loads active stock profiles.
         5. Pre-warms morning indicators from Parquet cache with live historical fallback.
@@ -174,7 +168,7 @@ class TrillionaireEngine:
         # ---------------------------------------------------------------------
         # Step 2: Resilient Broker Auth & Instrument Sync (Protected against timeouts)
         # ---------------------------------------------------------------------
-        if (self.trading_mode == TradingMode.LIVE or self.data_feeder == DataFeederType.ZERODHA_KITE) and self.auth_manager is not None:
+        if self.auth_manager is not None:
             try:
                 self.auth_manager.get_valid_access_token(trade_date=self.current_trade_date)
                 kite_client = self.auth_manager.get_kite_client()
@@ -183,16 +177,14 @@ class TrillionaireEngine:
                     self.instrument_sync.sync_instruments()
             except Exception as auth_err:
                 logger.warning(
-                    f"[PREMARKET AUTH] Kite live auth unavailable ({auth_err}); "
-                    f"falling back to cached NSE instruments / FREE_LIVE feed until OAuth login"
+                    f"[PREMARKET AUTH] Kite live auth not completed for today ({auth_err}); "
+                    f"loading cached NSE instruments from disk until OAuth login."
                 )
                 if self.instrument_sync is not None:
                     self.instrument_sync.load_cache_from_disk()
 
-                # If paper trading, seamlessly fallback to FREE_LIVE feeder so paper engine never crashes
-                if self.trading_mode == TradingMode.PAPER and self.data_feeder == DataFeederType.ZERODHA_KITE:
-                    logger.warning("[PREMARKET AUTH] Auto-switching data_feeder to FREE_LIVE for paper trading.")
-                    self.data_feeder = DataFeederType.FREE_LIVE
+        # Enforce sole feeder
+        self.data_feeder = DataFeederType.ZERODHA_KITE
 
         # ---------------------------------------------------------------------
         # Step 3: ALWAYS RUNS - Sentinel Triage, Profiles, & Indicator Warmup
@@ -296,64 +288,51 @@ class TrillionaireEngine:
         return resolved
 
     async def start(self) -> None:
-        """Starts real-time engine operations, activates broker/feeder, and subscribes signal router."""
+        """Starts real-time engine operations and activates KiteBroker WebSocket streaming."""
         if not self.is_booted:
             await self.boot_premarket()
 
         self.is_running = True
+        self.data_feeder = DataFeederType.ZERODHA_KITE
 
         # Wire reactive signal routing on EventBus
         self.bus.subscribe(SignalEvent, self.on_signal)
 
-        # Enforce Safety Lock
-        if self.data_feeder == DataFeederType.FREE_LIVE:
+        # In PAPER mode, ensure OrderManager routes through PaperBroker
+        if self.trading_mode == TradingMode.PAPER:
             if not isinstance(self.order_manager.broker, PaperBroker):
-                logger.warning("[SAFETY ENFORCED] FREE_LIVE feeder active: Order execution locked to PaperBroker.")
                 self.order_manager.broker = PaperBroker(event_bus=self.bus)
 
-            # Start FreeLiveMarketFeeder
-            if self.free_feeder is None:
-                self.free_feeder = FreeLiveMarketFeeder(event_bus=self.bus)
-            await self.free_feeder.start()
-        elif self.data_feeder == DataFeederType.ZERODHA_KITE:
-            from trading_engine.brokers.kite.kite_broker import KiteBroker
+        # Always initialize and start KiteBroker + KiteTicker for live market streaming
+        from trading_engine.brokers.kite.kite_broker import KiteBroker
 
+        resolved_tokens = self._resolve_subscribed_tokens()
+        if isinstance(self.broker, KiteBroker) or hasattr(self.broker, "tokens_to_subscribe"):
+            self.broker.tokens_to_subscribe = resolved_tokens
+        else:
+            kite_client = None
+            if self.auth_manager is not None:
+                try:
+                    kite_client = self.auth_manager.get_kite_client()
+                except Exception as e:
+                    logger.debug(f"Kite client not yet authenticated for today: {e}")
+            self.broker = KiteBroker(
+                kite_client=kite_client,
+                event_bus=self.bus,
+                instrument_sync=self.instrument_sync,
+                tokens_to_subscribe=resolved_tokens,
+            )
+            if hasattr(self.broker, "set_order_manager") and callable(self.broker.set_order_manager):
+                self.broker.set_order_manager(self.order_manager)
+
+        if hasattr(self.broker, "start") and callable(self.broker.start):
             try:
-                resolved_tokens = self._resolve_subscribed_tokens()
-                if isinstance(self.broker, KiteBroker) or hasattr(self.broker, "tokens_to_subscribe"):
-                    self.broker.tokens_to_subscribe = resolved_tokens
-                else:
-                    kite_client = None
-                    if self.auth_manager is not None:
-                        try:
-                            kite_client = self.auth_manager.get_kite_client()
-                        except Exception as e:
-                            logger.warning(f"Failed to get kite_client for KiteBroker: {e}")
-                    self.broker = KiteBroker(
-                        kite_client=kite_client,
-                        event_bus=self.bus,
-                        instrument_sync=self.instrument_sync,
-                        tokens_to_subscribe=resolved_tokens,
-                    )
-                    if hasattr(self.broker, "set_order_manager") and callable(self.broker.set_order_manager):
-                        self.broker.set_order_manager(self.order_manager)
-
-                if hasattr(self.broker, "start") and callable(self.broker.start):
-                    await self.broker.start()
+                await self.broker.start()
             except Exception as broker_err:
-                if self.trading_mode == TradingMode.PAPER:
-                    logger.warning(
-                        f"[BROKER START] Kite broker start failed ({broker_err}); "
-                        f"falling back to FreeLiveMarketFeeder for paper trading."
-                    )
-                    self.data_feeder = DataFeederType.FREE_LIVE
-                    if not isinstance(self.order_manager.broker, PaperBroker):
-                        self.order_manager.broker = PaperBroker(event_bus=self.bus)
-                    if self.free_feeder is None:
-                        self.free_feeder = FreeLiveMarketFeeder(event_bus=self.bus)
-                    await self.free_feeder.start()
-                else:
-                    raise
+                logger.warning(
+                    f"[KITE STREAM PENDING] Kite access token missing for today ({broker_err}) — "
+                    f"click 'Login with Kite' in Settings & Keys to start live KiteTicker stream"
+                )
 
         logger.info(
             f"[ENGINE STARTED] TrillionaireEngine running [Mode: {self.trading_mode.value}, Feeder: {self.data_feeder.value}]"
@@ -369,12 +348,11 @@ class TrillionaireEngine:
             logger.info("Flattening open positions prior to engine shutdown...")
             await self.order_manager.flatten_all_positions(reason="ENGINE_SHUTDOWN")
 
-        # 2. Stop active data feeder
-        if self.free_feeder is not None and self.free_feeder.is_running:
-            await self.free_feeder.stop()
-
+        # 2. Stop live Kite broker / ticker
         if hasattr(self.broker, "stop") and callable(self.broker.stop):
             await self.broker.stop()
+
+        logger.info("[ENGINE STOPPED] Engine successfully halted.")
 
         logger.info("[ENGINE STOPPED] Engine successfully halted.")
 
@@ -401,26 +379,22 @@ class TrillionaireEngine:
         logger.info(f"[ENGINE MODE UPDATED] Trading mode set to {mode.value}")
 
     def set_data_feeder(self, feeder_type: DataFeederType) -> None:
-        """Updates market data feeder dynamically and enforces broker safety lock."""
-        prev_feeder = self.data_feeder
-        self.data_feeder = feeder_type
-        logger.info(f"[FEEDER UPDATED] Market data feeder switched from {prev_feeder.value} to {feeder_type.value}")
+        """Enforces market data feeder as ZERODHA_KITE."""
+        self.data_feeder = DataFeederType.ZERODHA_KITE
+        logger.info("[FEEDER ENFORCED] Market data feeder locked to ZERODHA_KITE.")
 
-        # Safety lock enforcement: FREE_LIVE always routes orders through PaperBroker
-        if feeder_type == DataFeederType.FREE_LIVE:
-            if not isinstance(self.order_manager.broker, PaperBroker):
-                logger.warning("[SAFETY ENFORCED] FREE_LIVE feeder active: Order execution locked to PaperBroker.")
-                self.order_manager.broker = PaperBroker(event_bus=self.bus)
-        elif feeder_type == DataFeederType.ZERODHA_KITE and self.trading_mode == TradingMode.LIVE:
+        if self.trading_mode == TradingMode.LIVE:
             if self._live_broker is not None and not isinstance(self._live_broker, PaperBroker):
                 self.order_manager.broker = self._live_broker
-                logger.info("[BROKER RESTORED] Restored live KiteBroker order routing.")
+        else:
+            if not isinstance(self.order_manager.broker, PaperBroker):
+                self.order_manager.broker = PaperBroker(event_bus=self.bus)
 
-        # If engine is actively running, restart data streaming on new feeder
+        # If engine is actively running, restart data streaming on Kite
         if self.is_running:
             try:
                 loop = asyncio.get_running_loop()
-                loop.create_task(self._switch_feeder_runtime(prev_feeder, feeder_type))
+                loop.create_task(self._switch_feeder_runtime(DataFeederType.ZERODHA_KITE, DataFeederType.ZERODHA_KITE))
             except RuntimeError:
                 pass
 
@@ -464,42 +438,35 @@ class TrillionaireEngine:
         return warmed
 
     async def _switch_feeder_runtime(self, old_feeder: DataFeederType, new_feeder: DataFeederType) -> None:
-        """Gracefully transitions live data feeders while engine is active."""
-        if old_feeder == DataFeederType.FREE_LIVE and self.free_feeder is not None:
-            await self.free_feeder.stop()
-        elif old_feeder == DataFeederType.ZERODHA_KITE and hasattr(self.broker, "stop"):
-            await self.broker.stop()
+        """Connects or restarts live KiteBroker WebSocket streaming while engine is active."""
+        from trading_engine.brokers.kite.kite_broker import KiteBroker
 
-        if new_feeder == DataFeederType.FREE_LIVE:
-            if self.free_feeder is None:
-                self.free_feeder = FreeLiveMarketFeeder(event_bus=self.bus)
-            await self.free_feeder.start()
-        elif new_feeder == DataFeederType.ZERODHA_KITE:
-            from trading_engine.brokers.kite.kite_broker import KiteBroker
+        resolved_tokens = self._resolve_subscribed_tokens()
+        if isinstance(self.broker, KiteBroker) or hasattr(self.broker, "tokens_to_subscribe"):
+            self.broker.tokens_to_subscribe = resolved_tokens
+        else:
+            kite_client = None
+            if self.auth_manager is not None:
+                try:
+                    kite_client = self.auth_manager.get_kite_client()
+                except Exception as e:
+                    logger.debug(f"Failed to get kite_client for KiteBroker: {e}")
+            self.broker = KiteBroker(
+                kite_client=kite_client,
+                event_bus=self.bus,
+                instrument_sync=self.instrument_sync,
+                tokens_to_subscribe=resolved_tokens,
+            )
+            if hasattr(self.broker, "set_order_manager") and callable(self.broker.set_order_manager):
+                self.broker.set_order_manager(self.order_manager)
 
-            resolved_tokens = self._resolve_subscribed_tokens()
-            if isinstance(self.broker, KiteBroker) or hasattr(self.broker, "tokens_to_subscribe"):
-                self.broker.tokens_to_subscribe = resolved_tokens
-            else:
-                kite_client = None
-                if self.auth_manager is not None:
-                    try:
-                        kite_client = self.auth_manager.get_kite_client()
-                    except Exception as e:
-                        logger.warning(f"Failed to get kite_client for KiteBroker: {e}")
-                self.broker = KiteBroker(
-                    kite_client=kite_client,
-                    event_bus=self.bus,
-                    instrument_sync=self.instrument_sync,
-                    tokens_to_subscribe=resolved_tokens,
-                )
-                if hasattr(self.broker, "set_order_manager") and callable(self.broker.set_order_manager):
-                    self.broker.set_order_manager(self.order_manager)
-
-            if hasattr(self.broker, "start") and callable(self.broker.start):
+        if hasattr(self.broker, "start") and callable(self.broker.start):
+            try:
                 await self.broker.start()
+            except Exception as e:
+                logger.warning(f"[FEEDER CONNECT] Kite ticker start pending auth: {e}")
 
-        # Pre-warm indicators for newly switched feeder so candles evaluate immediately
+        # Pre-warm indicators so candles evaluate immediately
         try:
             self.warmup_indicators()
         except Exception as e:

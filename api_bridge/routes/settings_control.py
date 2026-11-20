@@ -87,7 +87,7 @@ class UpdateSettingsRequest(BaseModel):
     telegram_bot_token: Optional[str] = Field(default=None, description="Telegram Bot API Token")
     telegram_chat_id: Optional[str] = Field(default=None, description="Telegram Chat ID")
     trading_mode: Optional[TradingMode] = Field(default=None, description="REPLAY, PAPER, or LIVE")
-    data_feeder: Optional[DataFeederType] = Field(default=None, description="FREE_LIVE or ZERODHA_KITE")
+    data_feeder: Optional[DataFeederType] = Field(default=DataFeederType.ZERODHA_KITE, description="ZERODHA_KITE")
     active_capital_tier: Optional[str] = Field(default=None, description="Tier key in capital_tiers.yaml")
 
 
@@ -329,18 +329,43 @@ async def _handle_kite_oauth_callback(
         # Update engine data feeder
         engine.set_data_feeder(DataFeederType.ZERODHA_KITE)
 
+        kite_client = auth_mgr.get_kite_client()
+
         # Re-initialize instrument sync if needed
         if engine.instrument_sync is not None:
             try:
-                engine.instrument_sync.kite = auth_mgr.get_kite_client()
+                engine.instrument_sync.kite = kite_client
+                engine.instrument_sync.sync_instruments()
             except Exception as e:
                 logger.warning(f"[KITE OAUTH CALLBACK] Instrument sync kite client assignment: {e}")
 
-        # Restart engine if already running to pick up live Kite session
+        # Resolve all 100 universe stocks + 8 parent sector indices tokens
+        from trading_engine.brokers.kite.kite_broker import KiteBroker
+        resolved_tokens = engine._resolve_subscribed_tokens()
+
+        # Immediately connect KiteBroker + KiteTicker with all tokens
+        if isinstance(engine.broker, KiteBroker):
+            engine.broker.kite = kite_client
+            engine.broker.tokens_to_subscribe = resolved_tokens
+            if hasattr(engine.broker, "subscribe_tokens"):
+                engine.broker.subscribe_tokens(resolved_tokens)
+        else:
+            engine.broker = KiteBroker(
+                kite_client=kite_client,
+                event_bus=engine.bus,
+                instrument_sync=engine.instrument_sync,
+                tokens_to_subscribe=resolved_tokens,
+            )
+            if hasattr(engine.broker, "set_order_manager") and callable(engine.broker.set_order_manager):
+                engine.broker.set_order_manager(engine.order_manager)
+
+        # Restart engine if already running or start live Kite session
         if engine.is_running:
             logger.info("[KITE OAUTH CALLBACK] Restarting engine to switch live streaming to Zerodha Kite.")
             await engine.stop()
             await engine.start()
+        elif hasattr(engine.broker, "start") and callable(engine.broker.start):
+            await engine.broker.start()
 
         # Broadcast telemetry snapshot to all UI clients
         from api_bridge.ws.telemetry_manager import telemetry_manager
