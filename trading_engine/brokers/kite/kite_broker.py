@@ -117,7 +117,7 @@ class KiteBroker:
             if tick is None:
                 continue
 
-            self.latest_ticks[tick.tradingsymbol] = tick
+            self.set_latest_tick(tick)
             self._dispatch_coroutine(self.bus.publish(TickEvent(tick=tick)))
 
     def normalize_kite_tick(self, raw_tick: Dict[str, Any]) -> Optional[Tick]:
@@ -415,15 +415,33 @@ class KiteBroker:
         self._is_running = True
         self._loop = asyncio.get_running_loop()
 
+        # Auto-instantiate KiteTicker if self.ticker is None and credentials available
+        if self.ticker is None and self.kite is not None:
+            api_key = getattr(self.kite, "api_key", None)
+            access_token = getattr(self.kite, "access_token", None)
+            if not api_key:
+                from config.settings import settings
+                api_key = settings.kite_api_key
+            if not access_token:
+                from config.settings import settings
+                access_token = settings.kite_access_token
+            if api_key and access_token:
+                try:
+                    from kiteconnect import KiteTicker
+                    self.ticker = KiteTicker(api_key=api_key, access_token=access_token)
+                    self._setup_ticker_callbacks()
+                    logger.info("[KITE BROKER] Auto-instantiated KiteTicker in start().")
+                except Exception as e:
+                    logger.error(f"[KITE BROKER] Failed to auto-instantiate KiteTicker: {e}")
+
         # Start ticker in background thread if available
         if self.ticker is not None:
-            self._ticker_thread = threading.Thread(
-                target=self.ticker.connect,
-                kwargs={"threaded": True},
-                daemon=True,
-            )
-            self._ticker_thread.start()
-            logger.info("KiteTicker background thread initiated.")
+            try:
+                self.ticker.connect(threaded=True)
+                self._ticker_thread = getattr(self.ticker, "websocket_thread", None)
+                logger.info("[KITE TICKER] KiteTicker connected with threaded=True.")
+            except Exception as e:
+                logger.error(f"[KITE TICKER] Failed to connect KiteTicker: {e}")
 
         # Start reconciler loop
         self._reconciler_task = asyncio.create_task(self._reconciler_loop())

@@ -91,6 +91,12 @@ class UpdateSettingsRequest(BaseModel):
     active_capital_tier: Optional[str] = Field(default=None, description="Tier key in capital_tiers.yaml")
 
 
+class PushTokenRequest(BaseModel):
+    """Payload schema for pushing a daily Kite access token or request token to the engine."""
+    access_token: Optional[str] = Field(default=None, description="Zerodha Kite Connect access token")
+    request_token: Optional[str] = Field(default=None, description="Zerodha Kite Connect request token to exchange")
+
+
 # -----------------------------------------------------------------------------
 # Settings Inspection & Mutation Endpoints
 # -----------------------------------------------------------------------------
@@ -343,15 +349,29 @@ async def _handle_kite_oauth_callback(
         from trading_engine.brokers.kite.kite_broker import KiteBroker
         resolved_tokens = engine._resolve_subscribed_tokens()
 
+        ticker_client = None
+        api_key = settings.kite_api_key or getattr(kite_client, "api_key", "")
+        if api_key and not api_key.startswith("your_"):
+            try:
+                from kiteconnect import KiteTicker
+                ticker_client = KiteTicker(api_key=api_key, access_token=access_token)
+                logger.info("[KITE OAUTH CALLBACK] Instantiated KiteTicker.")
+            except Exception as e:
+                logger.warning(f"[KITE OAUTH CALLBACK] Could not instantiate KiteTicker: {e}")
+
         # Immediately connect KiteBroker + KiteTicker with all tokens
         if isinstance(engine.broker, KiteBroker):
             engine.broker.kite = kite_client
+            if ticker_client is not None:
+                engine.broker.ticker = ticker_client
+                engine.broker._setup_ticker_callbacks()
             engine.broker.tokens_to_subscribe = resolved_tokens
             if hasattr(engine.broker, "subscribe_tokens"):
                 engine.broker.subscribe_tokens(resolved_tokens)
         else:
             engine.broker = KiteBroker(
                 kite_client=kite_client,
+                ticker_client=ticker_client,
                 event_bus=engine.bus,
                 instrument_sync=engine.instrument_sync,
                 tokens_to_subscribe=resolved_tokens,
@@ -381,6 +401,17 @@ async def _handle_kite_oauth_callback(
         return RedirectResponse(url=f"/?error={str(e)}", status_code=status.HTTP_302_FOUND)
 
 
+@router.get("/callback")
+async def generic_oauth_callback(
+    request_token: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    action: Optional[str] = Query(None),
+    engine: TrillionaireEngine = Depends(get_engine),
+) -> RedirectResponse:
+    """Zerodha Kite Connect redirect callback (/api/v1/callback)."""
+    return await _handle_kite_oauth_callback(request_token, status, action, engine)
+
+
 @router.get("/kite/callback")
 async def kite_oauth_callback(
     request_token: Optional[str] = Query(None),
@@ -401,4 +432,123 @@ async def auth_oauth_callback(
 ) -> RedirectResponse:
     """Alternative Zerodha Kite Connect redirect callback (/api/v1/auth/callback)."""
     return await _handle_kite_oauth_callback(request_token, status, action, engine)
+
+
+@router.post("/kite/push-token", dependencies=[Depends(verify_admin_api_key)])
+async def push_kite_token(
+    payload: PushTokenRequest,
+    engine: TrillionaireEngine = Depends(get_engine),
+) -> Dict[str, Any]:
+    """
+    Accepts daily Kite access_token or request_token from external automated runner (e.g. residential PC),
+    caches in Redis and disk vault, initializes KiteTicker, subscribes universe tokens, and starts live streaming.
+    Protected by X-API-Key matching TRILLIONAIRE_ADMIN_KEY.
+    """
+    if not payload.access_token and not payload.request_token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either access_token or request_token must be provided.",
+        )
+
+    from trading_engine.brokers.kite.auth import KiteAuthManager
+    auth_mgr = engine.auth_manager
+    if auth_mgr is None:
+        auth_mgr = KiteAuthManager()
+        engine.auth_manager = auth_mgr
+
+    today = datetime.now(IST_TZ).date()
+
+    if payload.request_token:
+        try:
+            access_token = auth_mgr.exchange_and_save_request_token(
+                request_token=payload.request_token.strip(),
+                today_date=today,
+            )
+            logger.info(f"[PUSH TOKEN] Successfully exchanged request_token for access_token on {today}")
+        except Exception as e:
+            logger.error(f"[PUSH TOKEN ERROR] Token exchange failed: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Failed to exchange request_token: {str(e)}",
+            )
+    else:
+        access_token = payload.access_token.strip()
+        auth_mgr.save_access_token(access_token=access_token, today_date=today)
+        logger.info(f"[PUSH TOKEN] Successfully saved external access_token for {today}")
+
+    # Persist in-memory & .env
+    settings.kite_access_token = access_token
+    persist_env_updates({"KITE_ACCESS_TOKEN": access_token, "DATA_FEEDER": DataFeederType.ZERODHA_KITE.value})
+    reload_settings_from_env()
+
+    # Update engine data feeder
+    engine.set_data_feeder(DataFeederType.ZERODHA_KITE)
+
+    kite_client = auth_mgr.get_kite_client()
+
+    # Sync instruments if needed
+    if engine.instrument_sync is not None:
+        try:
+            engine.instrument_sync.kite = kite_client
+            engine.instrument_sync.sync_instruments()
+        except Exception as e:
+            logger.warning(f"[PUSH TOKEN] Instrument sync kite client assignment: {e}")
+
+    # Resolve all 100 universe stocks + 8 parent sector indices tokens
+    from trading_engine.brokers.kite.kite_broker import KiteBroker
+    resolved_tokens = engine._resolve_subscribed_tokens()
+
+    # Instantiate KiteTicker
+    ticker_client = None
+    api_key = settings.kite_api_key or getattr(kite_client, "api_key", "")
+    if api_key and not api_key.startswith("your_"):
+        try:
+            from kiteconnect import KiteTicker
+            ticker_client = KiteTicker(api_key=api_key, access_token=access_token)
+            logger.info("[PUSH TOKEN] Instantiated KiteTicker.")
+        except Exception as e:
+            logger.warning(f"[PUSH TOKEN] Could not instantiate KiteTicker: {e}")
+
+    if isinstance(engine.broker, KiteBroker):
+        engine.broker.kite = kite_client
+        if ticker_client is not None:
+            engine.broker.ticker = ticker_client
+            engine.broker._setup_ticker_callbacks()
+        engine.broker.tokens_to_subscribe = resolved_tokens
+        if hasattr(engine.broker, "subscribe_tokens"):
+            engine.broker.subscribe_tokens(resolved_tokens)
+    else:
+        engine.broker = KiteBroker(
+            kite_client=kite_client,
+            ticker_client=ticker_client,
+            event_bus=engine.bus,
+            instrument_sync=engine.instrument_sync,
+            tokens_to_subscribe=resolved_tokens,
+        )
+
+    if hasattr(engine.broker, "set_order_manager") and callable(engine.broker.set_order_manager):
+        engine.broker.set_order_manager(engine.order_manager)
+
+    # Start live Kite session
+    if hasattr(engine.broker, "start") and callable(engine.broker.start):
+        try:
+            await engine.broker.start()
+        except Exception as e:
+            logger.warning(f"[PUSH TOKEN] KiteBroker start warning: {e}")
+
+    # Broadcast telemetry snapshot
+    from api_bridge.ws.telemetry_manager import telemetry_manager
+    try:
+        await telemetry_manager.broadcast_snapshot()
+    except Exception as e:
+        logger.debug(f"[PUSH TOKEN] Snapshot broadcast: {e}")
+
+    return {
+        "status": "ok",
+        "message": "Kite token activated and KiteTicker stream online",
+        "active_tokens": len(resolved_tokens),
+        "engine_running": engine.is_running,
+        "trading_mode": engine.trading_mode.value,
+        "timestamp_ist": datetime.now(IST_TZ).isoformat(),
+    }
 

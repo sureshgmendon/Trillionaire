@@ -95,6 +95,7 @@ app.include_router(control_router, prefix="/api/v1")
 app.include_router(settings_router, prefix="/api/v1")
 
 
+@app.get("/callback")
 @app.get("/auth/callback")
 @app.get("/kite/callback")
 async def root_kite_oauth_callback(request: Request) -> RedirectResponse:

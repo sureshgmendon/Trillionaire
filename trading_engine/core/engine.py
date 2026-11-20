@@ -307,23 +307,50 @@ class TrillionaireEngine:
         from trading_engine.brokers.kite.kite_broker import KiteBroker
 
         resolved_tokens = self._resolve_subscribed_tokens()
+        kite_client = None
+        access_token = None
+        if self.auth_manager is not None:
+            try:
+                access_token = self.auth_manager.get_valid_access_token()
+            except Exception as e:
+                logger.debug(f"Kite access token not yet retrieved: {e}")
+            try:
+                kite_client = self.auth_manager.get_kite_client()
+            except Exception as e:
+                logger.debug(f"Kite client not yet authenticated for today: {e}")
+
+        if not access_token:
+            access_token = settings.kite_access_token
+
+        ticker_client = None
+        api_key = settings.kite_api_key or (getattr(kite_client, "api_key", "") if kite_client else "")
+        if access_token and api_key and not api_key.startswith("your_"):
+            try:
+                from kiteconnect import KiteTicker
+                ticker_client = KiteTicker(api_key=api_key, access_token=access_token)
+                logger.info("[ENGINE] Instantiated KiteTicker with active access token.")
+            except Exception as e:
+                logger.warning(f"[ENGINE] Could not instantiate KiteTicker: {e}")
+
         if isinstance(self.broker, KiteBroker) or hasattr(self.broker, "tokens_to_subscribe"):
             self.broker.tokens_to_subscribe = resolved_tokens
+            if kite_client is not None and getattr(self.broker, "kite", None) is None:
+                self.broker.kite = kite_client
+            if ticker_client is not None and getattr(self.broker, "ticker", None) is None:
+                self.broker.ticker = ticker_client
+                if hasattr(self.broker, "_setup_ticker_callbacks"):
+                    self.broker._setup_ticker_callbacks()
         else:
-            kite_client = None
-            if self.auth_manager is not None:
-                try:
-                    kite_client = self.auth_manager.get_kite_client()
-                except Exception as e:
-                    logger.debug(f"Kite client not yet authenticated for today: {e}")
             self.broker = KiteBroker(
                 kite_client=kite_client,
+                ticker_client=ticker_client,
                 event_bus=self.bus,
                 instrument_sync=self.instrument_sync,
                 tokens_to_subscribe=resolved_tokens,
             )
-            if hasattr(self.broker, "set_order_manager") and callable(self.broker.set_order_manager):
-                self.broker.set_order_manager(self.order_manager)
+
+        if hasattr(self.broker, "set_order_manager") and callable(self.broker.set_order_manager):
+            self.broker.set_order_manager(self.order_manager)
 
         if hasattr(self.broker, "start") and callable(self.broker.start):
             try:
