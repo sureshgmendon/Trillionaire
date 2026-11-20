@@ -7,7 +7,7 @@ Coordinates hands-free execution across the daily Indian equity market cycle:
 """
 
 import asyncio
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 from loguru import logger
 
@@ -36,6 +36,11 @@ class WeekdayMarketScheduler:
         self._last_squareoff_date: Optional[date] = None
         self._last_stop_date: Optional[date] = None
 
+        # Morning boot retry tracking to prevent rapid retry storms
+        self._boot_retries_today: int = 0
+        self._boot_retry_after: Optional[datetime] = None
+        self._current_tracked_date: Optional[date] = None
+
     def start(self) -> None:
         """Starts the scheduler background monitoring task."""
         if self.is_running:
@@ -48,6 +53,10 @@ class WeekdayMarketScheduler:
             self._last_boot_date = today
             self._last_squareoff_date = today
             self._last_stop_date = today
+        elif getattr(self.engine, "is_booted", False) and (
+            getattr(self.engine, "current_trade_date", None) == today or getattr(self.engine, "is_running", False)
+        ):
+            self._last_boot_date = today
 
         self.is_running = True
         self._task = asyncio.create_task(self._monitoring_loop())
@@ -69,30 +78,57 @@ class WeekdayMarketScheduler:
     # Deterministic Trigger Actions (Also callable directly by tests)
     # -------------------------------------------------------------------------
 
-    async def trigger_morning_boot(self, trade_date: Optional[date] = None) -> Dict[str, Any]:
+    async def trigger_morning_boot(
+        self,
+        trade_date: Optional[date] = None,
+        current_time_ist: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
         """
         Executes pre-market startup:
-        1. Gracefully stops any stale or lingering live session.
-        2. Executes pre-market boot (sync instruments, run Sentinel, warm indicators).
-        3. Starts live trading engine.
+        1. Unconditionally resets risk gatekeeper daily state and circuit breakers.
+        2. Gracefully stops any stale or lingering live session.
+        3. Executes pre-market boot (sync instruments, run Sentinel, warm indicators).
+        4. Starts live trading engine.
         """
-        target_date = trade_date or datetime.now(IST_TZ).date()
+        now = current_time_ist or datetime.now(IST_TZ)
+        target_date = trade_date or now.date()
         logger.info(f"[SCHEDULER 08:45 AM] Executing morning pre-market boot for {target_date}...")
 
-        # 1. Stop any stale engine session
-        if self.engine.is_running:
-            logger.info("[SCHEDULER] Halting existing engine session prior to morning boot.")
-            await self.engine.stop()
+        # 1. Unconditionally reset daily risk gatekeeper state
+        if hasattr(self.engine, "risk_gatekeeper") and self.engine.risk_gatekeeper is not None:
+            self.engine.risk_gatekeeper.reset_daily_state(trade_date=target_date)
 
-        # 2. Boot pre-market routine
-        boot_res = await self.engine.boot_premarket(trade_date=target_date)
+        try:
+            # 2. Stop any stale engine session
+            if self.engine.is_running:
+                logger.info("[SCHEDULER] Halting existing engine session prior to morning boot.")
+                await self.engine.stop()
 
-        # 3. Start engine streaming
-        await self.engine.start()
+            # 3. Boot pre-market routine
+            boot_res = await self.engine.boot_premarket(trade_date=target_date)
 
-        self._last_boot_date = target_date
-        logger.info(f"[SCHEDULER 08:45 AM] Morning startup completed successfully: {boot_res.get('status')}")
-        return boot_res
+            # 4. Start engine streaming
+            await self.engine.start()
+
+            self._last_boot_date = target_date
+            self._boot_retries_today = 0
+            self._boot_retry_after = None
+            logger.info(f"[SCHEDULER 08:45 AM] Morning startup completed successfully: {boot_res.get('status')}")
+            return boot_res
+        except Exception as e:
+            self._boot_retries_today += 1
+            self._boot_retry_after = now + timedelta(minutes=5)
+            logger.error(
+                f"[SCHEDULER 08:45 AM] Morning boot attempt {self._boot_retries_today} failed: {e}. "
+                f"Cooldown for 5 minutes (retry after {self._boot_retry_after.strftime('%H:%M:%S')})."
+            )
+            if self._boot_retries_today >= 3:
+                self._last_boot_date = target_date
+                logger.critical(
+                    f"[SCHEDULER 08:45 AM] Morning boot reached max retries ({self._boot_retries_today}) for {target_date}. "
+                    f"Marking boot as completed to prevent retry storms."
+                )
+            raise
 
     async def trigger_eod_squareoff(self, trade_date: Optional[date] = None) -> List[Any]:
         """
@@ -134,6 +170,11 @@ class WeekdayMarketScheduler:
             return
 
         today = now_ist.date()
+        if self._current_tracked_date != today:
+            self._current_tracked_date = today
+            self._boot_retries_today = 0
+            self._boot_retry_after = None
+
         hour = now_ist.hour
         minute = now_ist.minute
 
@@ -141,7 +182,15 @@ class WeekdayMarketScheduler:
         # Triggers anytime between 08:45 and 15:14 if not yet booted today
         if (hour == 8 and minute >= 45) or (9 <= hour < 15) or (hour == 15 and minute < 15):
             if self._last_boot_date != today:
-                await self.trigger_morning_boot(today)
+                if getattr(self.engine, "is_booted", False) and getattr(self.engine, "current_trade_date", None) == today:
+                    self._last_boot_date = today
+                elif self._boot_retries_today < 3 and (
+                    self._boot_retry_after is None or now_ist >= self._boot_retry_after
+                ):
+                    try:
+                        await self.trigger_morning_boot(trade_date=today, current_time_ist=now_ist)
+                    except Exception as boot_err:
+                        logger.error(f"[SCHEDULER] evaluate_schedule caught morning boot error: {boot_err}")
 
         # 2. 03:15 PM IST (15:15): EOD Force Square-off
         # Active between 15:15 and 15:34 IST on weekdays

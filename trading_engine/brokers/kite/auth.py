@@ -277,6 +277,18 @@ class KiteAuthManager:
             if self._http_client is None:
                 client.close()
 
+    def exchange_and_save_request_token(self, request_token: str, today_date: Optional[date] = None) -> str:
+        """Exchanges request_token for access_token and persists to Redis and disk cache."""
+        dt = today_date or datetime.now(IST_TZ).date()
+        access_token = self._exchange_request_token(request_token)
+        self._save_token(access_token, dt)
+        return access_token
+
+    def save_access_token(self, access_token: str, today_date: Optional[date] = None) -> None:
+        """Saves externally acquired access token (e.g. from OAuth redirect)."""
+        dt = today_date or datetime.now(IST_TZ).date()
+        self._save_token(access_token=access_token, today_date=dt)
+
     def _exchange_request_token(self, request_token: str) -> str:
         """Exchanges request_token for access_token using KiteConnect SDK."""
         if self._kite_client is not None:

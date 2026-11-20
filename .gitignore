@@ -35,6 +35,7 @@ build/
 node_modules/
 .next/
 out/
+*.tsbuildinfo
 
 # Research Lab Large Tick Data Stores (Parquet / DuckDB)
 research_lab/data_store/*.parquet

@@ -9,7 +9,7 @@ Coordinates REST telemetry, operator control commands, and live WebSocket broadc
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from loguru import logger
 
 from api_bridge.routes.engine_control import router as control_router, set_engine
@@ -93,6 +93,14 @@ app.add_middleware(
 app.include_router(health_router, prefix="/api/v1")
 app.include_router(control_router, prefix="/api/v1")
 app.include_router(settings_router, prefix="/api/v1")
+
+
+@app.get("/auth/callback")
+@app.get("/kite/callback")
+async def root_kite_oauth_callback(request: Request) -> RedirectResponse:
+    """Forwards root-level Kite OAuth callback to /api/v1/kite/callback preserving query params."""
+    qs = f"?{request.url.query}" if request.url.query else ""
+    return RedirectResponse(url=f"/api/v1/kite/callback{qs}", status_code=307)
 
 
 @app.exception_handler(Exception)

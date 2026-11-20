@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from shared.constants import IST_TZ
+from shared.enums import TradingMode
 from trading_engine.core.engine import TrillionaireEngine
 from trading_engine.core.event_bus import EventBus
 from trading_engine.core.scheduler import WeekdayMarketScheduler
@@ -183,3 +184,110 @@ async def test_scheduler_deterministic_manual_triggers(mock_engine):
     mock_engine.is_running = True
     await scheduler.trigger_post_market_stop()
     mock_engine.stop.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_day_rollover_resets_kill_switch_even_if_kite_auth_times_out():
+    """
+    Validates AWS Day Rollover fix:
+    If yesterday locked in a -1.56% daily MTM and active kill-switch,
+    today's morning boot resets PortfolioRiskGatekeeper state FIRST,
+    even if Kite auth times out with TimeoutError.
+    """
+    bus = EventBus()
+    risk_guard = PortfolioRiskGatekeeper(event_bus=bus, allocated_capital=100000.0)
+    broker = PaperBroker(event_bus=bus)
+    om = OrderManager(event_bus=bus, broker=broker, risk_gatekeeper=risk_guard)
+    strategy_runner = LiveStrategyRunner(event_bus=bus)
+
+    # Simulate Day 1: Trip kill switch with loss
+    day1 = date(2026, 11, 19)
+    risk_guard.current_trade_date = day1
+    risk_guard.realized_daily_pnl = -1600.0  # -1.6% (exceeds -1.5% max daily loss)
+    risk_guard.kill_switch_active = True
+    assert risk_guard.kill_switch_active is True
+
+    engine = TrillionaireEngine(
+        trading_mode=TradingMode.PAPER,
+        event_bus=bus,
+        risk_gatekeeper=risk_guard,
+        order_manager=om,
+        broker=broker,
+        strategy_runner=strategy_runner,
+    )
+
+    # Mock auth_manager raising TimeoutError (AWS datacenter timeout)
+    mock_auth = MagicMock()
+    mock_auth.get_valid_access_token.side_effect = TimeoutError("Zerodha Kite connect timed out")
+    engine.auth_manager = mock_auth
+
+    scheduler = WeekdayMarketScheduler(engine=engine)
+    day2 = date(2026, 11, 20)
+
+    # Trigger morning boot on Day 2
+    res = await scheduler.trigger_morning_boot(trade_date=day2)
+
+    # Assert risk state was unconditionally reset for Day 2
+    assert risk_guard.current_trade_date == day2
+    assert risk_guard.realized_daily_pnl == 0.0
+    assert risk_guard.kill_switch_active is False
+    assert res["status"] == "booted"
+    assert engine.is_running is True
+
+
+@pytest.mark.asyncio
+async def test_scheduler_retry_cooldown_and_max_retries():
+    """
+    Validates that when morning boot fails:
+    1. _boot_retries_today increments.
+    2. _boot_retry_after is set ~5 minutes into the future.
+    3. evaluate_schedule within cooldown does NOT re-trigger.
+    4. After 3 failed attempts, _last_boot_date is set to today to prevent retry storm.
+    """
+    bus = EventBus()
+    risk_guard = PortfolioRiskGatekeeper(event_bus=bus, allocated_capital=100000.0)
+    broker = PaperBroker(event_bus=bus)
+    om = OrderManager(event_bus=bus, broker=broker, risk_gatekeeper=risk_guard)
+    strategy_runner = LiveStrategyRunner(event_bus=bus)
+
+    engine = TrillionaireEngine(
+        trading_mode=TradingMode.LIVE,
+        event_bus=bus,
+        risk_gatekeeper=risk_guard,
+        order_manager=om,
+        broker=broker,
+        strategy_runner=strategy_runner,
+    )
+    # Fail engine.boot_premarket with error
+    engine.boot_premarket = AsyncMock(side_effect=RuntimeError("Simulated boot failure"))
+
+    scheduler = WeekdayMarketScheduler(engine=engine)
+    today = date(2026, 11, 16)  # Monday
+    t_0845 = datetime(2026, 11, 16, 8, 45, 0, tzinfo=IST_TZ)
+
+    # Attempt 1: evaluate_schedule calls trigger_morning_boot and fails
+    await scheduler.evaluate_schedule(t_0845)
+    assert scheduler._boot_retries_today == 1
+    assert scheduler._boot_retry_after is not None
+    assert scheduler._last_boot_date is None
+
+    # Attempt 2 within 15 seconds (8:45:15 IST) - should be skipped due to 5-min cooldown
+    t_0845_15 = datetime(2026, 11, 16, 8, 45, 15, tzinfo=IST_TZ)
+    await scheduler.evaluate_schedule(t_0845_15)
+    assert scheduler._boot_retries_today == 1  # Not incremented, cooldown respected
+    assert engine.boot_premarket.call_count == 1
+
+    # Simulate fast-forwarding 5 minutes (8:50:01 IST) -> Attempt 2
+    t_0850_01 = datetime(2026, 11, 16, 8, 50, 1, tzinfo=IST_TZ)
+    await scheduler.evaluate_schedule(t_0850_01)
+    assert scheduler._boot_retries_today == 2
+    assert engine.boot_premarket.call_count == 2
+
+    # Fast-forward another 5 minutes (8:55:02 IST) -> Attempt 3 (Max retries reached)
+    t_0855_02 = datetime(2026, 11, 16, 8, 55, 2, tzinfo=IST_TZ)
+    await scheduler.evaluate_schedule(t_0855_02)
+    assert scheduler._boot_retries_today == 3
+    assert engine.boot_premarket.call_count == 3
+    # Max retries reached: _last_boot_date is set to today to stop retry storms
+    assert scheduler._last_boot_date == today
+

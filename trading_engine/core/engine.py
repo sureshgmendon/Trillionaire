@@ -150,16 +150,30 @@ class TrillionaireEngine:
     async def boot_premarket(self, trade_date: Optional[date] = None) -> Dict[str, Any]:
         """
         Executes pre-market startup sequence (08:30–08:45 AM IST):
-        1. Authenticates live broker session (if LIVE mode).
-        2. Downloads and synchronizes daily NSE instrument definitions.
-        3. Runs overnight news classification & calendar event blackouts.
-        4. Resets intraday PnL and risk circuit breakers.
-        5. Refreshes active stock profiles.
+        1. Unconditionally resets daily risk gatekeeper state, circuit breakers, and funnel metrics.
+        2. Resiliently handles Kite live authentication & instrument master sync (falls back to cache / FREE_LIVE on timeout).
+        3. Runs overnight news classification & calendar event blackouts via Sentinel.
+        4. Loads active stock profiles.
+        5. Pre-warms morning indicators from Parquet cache with live historical fallback.
         """
         self.current_trade_date = trade_date or datetime.now(IST_TZ).date()
         logger.info(f"Booting TrillionaireEngine for trade date: {self.current_trade_date}...")
 
-        # 1. Live Authentication & Instrument Master Sync
+        # ---------------------------------------------------------------------
+        # Step 1: ALWAYS RUNS FIRST - Unconditional Daily Risk & Session Reset
+        # ---------------------------------------------------------------------
+        self.risk_gatekeeper.reset_daily_state(trade_date=self.current_trade_date)
+        if hasattr(self.strategy_runner, "funnel_metrics"):
+            self.strategy_runner.funnel_metrics = {
+                "candles_evaluated": 0,
+                "passed_stock_rule": 0,
+                "passed_sector_filter": 0,
+                "signals_emitted": 0,
+            }
+
+        # ---------------------------------------------------------------------
+        # Step 2: Resilient Broker Auth & Instrument Sync (Protected against timeouts)
+        # ---------------------------------------------------------------------
         if (self.trading_mode == TradingMode.LIVE or self.data_feeder == DataFeederType.ZERODHA_KITE) and self.auth_manager is not None:
             try:
                 self.auth_manager.get_valid_access_token(trade_date=self.current_trade_date)
@@ -167,20 +181,24 @@ class TrillionaireEngine:
                 if self.instrument_sync is not None:
                     self.instrument_sync.kite = kite_client
                     self.instrument_sync.sync_instruments()
-            except Exception as e:
-                logger.error(f"Premarket authentication/instrument sync failed: {e}")
-                raise
+            except Exception as auth_err:
+                logger.warning(
+                    f"[PREMARKET AUTH] Kite live auth unavailable ({auth_err}); "
+                    f"falling back to cached NSE instruments / FREE_LIVE feed until OAuth login"
+                )
+                if self.instrument_sync is not None:
+                    self.instrument_sync.load_cache_from_disk()
 
-        # 2. Sentinel Pre-Market Triage
+                # If paper trading, seamlessly fallback to FREE_LIVE feeder so paper engine never crashes
+                if self.trading_mode == TradingMode.PAPER and self.data_feeder == DataFeederType.ZERODHA_KITE:
+                    logger.warning("[PREMARKET AUTH] Auto-switching data_feeder to FREE_LIVE for paper trading.")
+                    self.data_feeder = DataFeederType.FREE_LIVE
+
+        # ---------------------------------------------------------------------
+        # Step 3: ALWAYS RUNS - Sentinel Triage, Profiles, & Indicator Warmup
+        # ---------------------------------------------------------------------
         sentinel_tags = self.sentinel.run_pre_market_triage(current_date_ist=self.current_trade_date)
-
-        # 3. Reset Daily Risk Gatekeeper State
-        self.risk_gatekeeper.reset_daily_state(trade_date=self.current_trade_date)
-
-        # 4. Reload Stock Profiles
         self.strategy_runner.load_profiles_from_disk()
-
-        # 5. Morning Indicator Warmup from Parquet with Live History Fallback
         warmed = self.warmup_indicators()
 
         self.is_booted = True
@@ -300,27 +318,42 @@ class TrillionaireEngine:
         elif self.data_feeder == DataFeederType.ZERODHA_KITE:
             from trading_engine.brokers.kite.kite_broker import KiteBroker
 
-            resolved_tokens = self._resolve_subscribed_tokens()
-            if isinstance(self.broker, KiteBroker) or hasattr(self.broker, "tokens_to_subscribe"):
-                self.broker.tokens_to_subscribe = resolved_tokens
-            else:
-                kite_client = None
-                if self.auth_manager is not None:
-                    try:
-                        kite_client = self.auth_manager.get_kite_client()
-                    except Exception as e:
-                        logger.warning(f"Failed to get kite_client for KiteBroker: {e}")
-                self.broker = KiteBroker(
-                    kite_client=kite_client,
-                    event_bus=self.bus,
-                    instrument_sync=self.instrument_sync,
-                    tokens_to_subscribe=resolved_tokens,
-                )
-                if hasattr(self.broker, "set_order_manager") and callable(self.broker.set_order_manager):
-                    self.broker.set_order_manager(self.order_manager)
+            try:
+                resolved_tokens = self._resolve_subscribed_tokens()
+                if isinstance(self.broker, KiteBroker) or hasattr(self.broker, "tokens_to_subscribe"):
+                    self.broker.tokens_to_subscribe = resolved_tokens
+                else:
+                    kite_client = None
+                    if self.auth_manager is not None:
+                        try:
+                            kite_client = self.auth_manager.get_kite_client()
+                        except Exception as e:
+                            logger.warning(f"Failed to get kite_client for KiteBroker: {e}")
+                    self.broker = KiteBroker(
+                        kite_client=kite_client,
+                        event_bus=self.bus,
+                        instrument_sync=self.instrument_sync,
+                        tokens_to_subscribe=resolved_tokens,
+                    )
+                    if hasattr(self.broker, "set_order_manager") and callable(self.broker.set_order_manager):
+                        self.broker.set_order_manager(self.order_manager)
 
-            if hasattr(self.broker, "start") and callable(self.broker.start):
-                await self.broker.start()
+                if hasattr(self.broker, "start") and callable(self.broker.start):
+                    await self.broker.start()
+            except Exception as broker_err:
+                if self.trading_mode == TradingMode.PAPER:
+                    logger.warning(
+                        f"[BROKER START] Kite broker start failed ({broker_err}); "
+                        f"falling back to FreeLiveMarketFeeder for paper trading."
+                    )
+                    self.data_feeder = DataFeederType.FREE_LIVE
+                    if not isinstance(self.order_manager.broker, PaperBroker):
+                        self.order_manager.broker = PaperBroker(event_bus=self.bus)
+                    if self.free_feeder is None:
+                        self.free_feeder = FreeLiveMarketFeeder(event_bus=self.bus)
+                    await self.free_feeder.start()
+                else:
+                    raise
 
         logger.info(
             f"[ENGINE STARTED] TrillionaireEngine running [Mode: {self.trading_mode.value}, Feeder: {self.data_feeder.value}]"

@@ -723,4 +723,74 @@ async def test_replay_with_empty_instruments_includes_parent_sectors_and_updates
             assert status_data["funnel_metrics"]["candles_evaluated"] > 0
 
 
+@pytest.mark.asyncio
+async def test_post_control_engine_start_resets_kill_switch_and_restarts(mock_engine_and_client):
+    """
+    Verifies that POST /api/v1/control/engine/start:
+    1. Stops running engine session if already running.
+    2. Resets risk gatekeeper daily state and clears any tripped kill-switch.
+    3. Runs boot_premarket and starts engine cleanly.
+    4. Returns HTTP 200 with status='started' and is_running=True.
+    """
+    engine, client, _, _, risk_guard = mock_engine_and_client
+    admin_key = settings.trillionaire_admin_key
+
+    # Trip kill switch
+    risk_guard.kill_switch_active = True
+    risk_guard.realized_daily_pnl = -1800.0
+    assert risk_guard.kill_switch_active is True
+
+    # Call POST /api/v1/control/engine/start
+    resp = client.post(
+        "/api/v1/control/engine/start",
+        headers={"X-API-Key": admin_key},
+        params={"boot_premarket": "true"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["status"] == "started"
+    assert data["is_running"] is True
+    assert data["is_booted"] is True
+
+    # Kill switch must be cleared
+    assert risk_guard.kill_switch_active is False
+    assert risk_guard.realized_daily_pnl == 0.0
+
+
+def test_kite_oauth_login_redirect(mock_engine_and_client):
+    """
+    Verifies GET /api/v1/kite/login redirects to Kite Connect OAuth login.
+    """
+    _, client, _, _, _ = mock_engine_and_client
+
+    with patch.object(settings, "kite_api_key", "test_kite_api_key_123"):
+        resp = client.get("/api/v1/kite/login", follow_redirects=False)
+        assert resp.status_code == 302
+        assert "kite.zerodha.com/connect/login" in resp.headers["location"]
+        assert "api_key=test_kite_api_key_123" in resp.headers["location"]
+
+
+def test_kite_oauth_callback_flow(mock_engine_and_client):
+    """
+    Verifies GET /api/v1/kite/callback exchanges token, switches feeder, and redirects to dashboard.
+    """
+    engine, client, _, _, _ = mock_engine_and_client
+
+    mock_auth = MagicMock()
+    mock_auth.exchange_and_save_request_token.return_value = "mock_access_token_xyz"
+    engine.auth_manager = mock_auth
+
+    with patch("api_bridge.routes.settings_control.persist_env_updates") as mock_persist:
+        resp = client.get(
+            "/api/v1/kite/callback?request_token=mock_req_tok_999&action=login&status=success",
+            follow_redirects=False,
+        )
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/?kite_auth=success"
+        mock_auth.exchange_and_save_request_token.assert_called_once()
+        mock_persist.assert_called_with({"DATA_FEEDER": "ZERODHA_KITE"})
+        assert engine.data_feeder.value == "ZERODHA_KITE"
+
+
+
 

@@ -8,6 +8,7 @@ and engine startup/shutdown directly from the Next.js Cockpit.
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from loguru import logger
 
@@ -205,16 +206,39 @@ async def start_trading_engine(
     engine: TrillionaireEngine = Depends(get_engine),
 ) -> Dict[str, Any]:
     """
-    Boots pre-market routine (syncs instruments, warms indicators, Sentinel triage)
-    and starts real-time streaming operations.
+    Stops any stale sessions, resets daily risk gatekeeper state / circuit breakers,
+    boots pre-market routine (syncs instruments, warms indicators, Sentinel triage),
+    starts real-time streaming operations, and broadcasts fresh telemetry snapshot.
     """
     logger.info(f"[API LIFECYCLE] Engine START requested via REST API (boot_premarket={boot_premarket})")
 
-    if boot_premarket:
-        await engine.boot_premarket()
+    # 1. Halt stale or existing session if running
+    if engine.is_running:
+        logger.info("[API LIFECYCLE] Halting existing engine session prior to restart.")
+        await engine.stop()
 
+    # 2. Reset daily risk gatekeeper state and clear kill-switch
+    today = datetime.now(IST_TZ).date()
+    if hasattr(engine, "risk_gatekeeper") and engine.risk_gatekeeper is not None:
+        engine.risk_gatekeeper.reset_daily_state(trade_date=today)
+
+    # 3. Boot premarket sequence
+    if boot_premarket:
+        try:
+            await engine.boot_premarket(trade_date=today)
+        except Exception as e:
+            logger.warning(f"[API LIFECYCLE] Premarket boot encountered error: {e}. Continuing with engine start.")
+
+    # 4. Start engine streaming
     if not engine.is_running:
         await engine.start()
+
+    # 5. Broadcast fresh snapshot to all UI clients
+    from api_bridge.ws.telemetry_manager import telemetry_manager
+    try:
+        await telemetry_manager.broadcast_snapshot()
+    except Exception as e:
+        logger.debug(f"[API LIFECYCLE] Snapshot broadcast error: {e}")
 
     return {
         "status": "started",
@@ -247,3 +271,109 @@ async def stop_trading_engine(
         "trading_mode": engine.trading_mode.value,
         "timestamp_ist": datetime.now(IST_TZ).isoformat(),
     }
+
+
+# -----------------------------------------------------------------------------
+# 1-Click Zerodha Kite Connect Browser OAuth Login & Callback
+# -----------------------------------------------------------------------------
+
+@router.get("/kite/login")
+async def kite_oauth_login() -> RedirectResponse:
+    """
+    Redirects user's browser to official Zerodha Kite Connect login screen.
+    Uses KITE_API_KEY from configuration.
+    """
+    api_key = settings.kite_api_key
+    if not api_key or api_key.startswith("your_") or len(api_key.strip()) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="KITE_API_KEY is not configured. Please set your Kite Connect API key in Settings.",
+        )
+    kite_login_url = f"https://kite.zerodha.com/connect/login?v=3&api_key={api_key.strip()}"
+    logger.info(f"[KITE OAUTH] Initiating 1-click browser login redirect -> {kite_login_url}")
+    return RedirectResponse(url=kite_login_url, status_code=status.HTTP_302_FOUND)
+
+
+async def _handle_kite_oauth_callback(
+    request_token: Optional[str],
+    status_param: Optional[str],
+    action: Optional[str],
+    engine: TrillionaireEngine,
+) -> RedirectResponse:
+    """
+    Exchanges request_token for Kite Connect access_token, persists to Redis & disk,
+    switches data_feeder to ZERODHA_KITE, restarts engine if running, and redirects to dashboard.
+    """
+    logger.info(f"[KITE OAUTH CALLBACK] Received: status={status_param}, action={action}, has_token={bool(request_token)}")
+
+    if status_param == "cancelled" or not request_token:
+        logger.warning(f"[KITE OAUTH CALLBACK] Login cancelled or missing request_token (status={status_param})")
+        return RedirectResponse(url="/?error=kite_login_cancelled", status_code=status.HTTP_302_FOUND)
+
+    try:
+        from trading_engine.brokers.kite.auth import KiteAuthManager
+
+        auth_mgr = engine.auth_manager
+        if auth_mgr is None:
+            auth_mgr = KiteAuthManager()
+            engine.auth_manager = auth_mgr
+
+        today = datetime.now(IST_TZ).date()
+        access_token = auth_mgr.exchange_and_save_request_token(request_token=request_token, today_date=today)
+        logger.info(f"[KITE OAUTH CALLBACK] Successfully exchanged and saved access_token for {today}")
+
+        # Persist DATA_FEEDER=ZERODHA_KITE into .env
+        persist_env_updates({"DATA_FEEDER": DataFeederType.ZERODHA_KITE.value})
+        reload_settings_from_env()
+
+        # Update engine data feeder
+        engine.set_data_feeder(DataFeederType.ZERODHA_KITE)
+
+        # Re-initialize instrument sync if needed
+        if engine.instrument_sync is not None:
+            try:
+                engine.instrument_sync.kite = auth_mgr.get_kite_client()
+            except Exception as e:
+                logger.warning(f"[KITE OAUTH CALLBACK] Instrument sync kite client assignment: {e}")
+
+        # Restart engine if already running to pick up live Kite session
+        if engine.is_running:
+            logger.info("[KITE OAUTH CALLBACK] Restarting engine to switch live streaming to Zerodha Kite.")
+            await engine.stop()
+            await engine.start()
+
+        # Broadcast telemetry snapshot to all UI clients
+        from api_bridge.ws.telemetry_manager import telemetry_manager
+        try:
+            await telemetry_manager.broadcast_snapshot()
+        except Exception:
+            pass
+
+        return RedirectResponse(url="/?kite_auth=success", status_code=status.HTTP_302_FOUND)
+
+    except Exception as e:
+        logger.error(f"[KITE OAUTH CALLBACK ERROR] Token exchange failed: {e}")
+        return RedirectResponse(url=f"/?error={str(e)}", status_code=status.HTTP_302_FOUND)
+
+
+@router.get("/kite/callback")
+async def kite_oauth_callback(
+    request_token: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    action: Optional[str] = Query(None),
+    engine: TrillionaireEngine = Depends(get_engine),
+) -> RedirectResponse:
+    """Zerodha Kite Connect redirect callback (/api/v1/kite/callback)."""
+    return await _handle_kite_oauth_callback(request_token, status, action, engine)
+
+
+@router.get("/auth/callback")
+async def auth_oauth_callback(
+    request_token: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    action: Optional[str] = Query(None),
+    engine: TrillionaireEngine = Depends(get_engine),
+) -> RedirectResponse:
+    """Alternative Zerodha Kite Connect redirect callback (/api/v1/auth/callback)."""
+    return await _handle_kite_oauth_callback(request_token, status, action, engine)
+

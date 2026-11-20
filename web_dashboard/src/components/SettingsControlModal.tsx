@@ -4,6 +4,7 @@ import React, { useState, useEffect } from "react";
 import {
   AlertTriangle,
   CheckCircle,
+  ExternalLink,
   Key,
   Lock,
   Radio,
@@ -379,6 +380,28 @@ export const SettingsControlModal: React.FC<SettingsControlModalProps> = ({
                   </div>
 
                   
+
+        {/* 1-Click Browser OAuth Login */}
+        <div className="p-3.5 rounded-lg bg-gradient-to-r from-cyan-950/40 via-blue-950/30 to-slate-900/60 border border-cyan-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
+          <div>
+            <div className="flex items-center gap-1.5 text-xs font-semibold text-cyan-300">
+              <Key className="h-3.5 w-3.5 text-cyan-400" />
+              <span>1-Click Zerodha Kite Connect OAuth Login</span>
+            </div>
+            <div className="text-[11px] text-slate-300 mt-0.5">
+              Instantly authenticate your live Kite session in your browser. Auto-exchanges token and arms Zerodha streaming.
+            </div>
+          </div>
+          <a
+            href={`${apiUrl}/api/v1/kite/login`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex-shrink-0 inline-flex items-center justify-center space-x-1.5 px-3 py-1.5 rounded bg-cyan-600 hover:bg-cyan-500 text-slate-950 text-xs font-bold transition shadow-sm"
+          >
+            <span>Login with Kite</span>
+            <ExternalLink className="h-3.5 w-3.5" />
+          </a>
+        </div>
 
         {/* Saved Kite Account Profile Selector */}
 
