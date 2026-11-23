@@ -183,6 +183,19 @@ class OrderManager:
         ref_price = tick.ltp if tick is not None else pos.ltp
         limit_price = self.calculate_marketable_limit_price(exit_side, ref_price)
 
+        # Normalize exit reason to standard codes: TP_HIT, SL_HIT, 1R_BREAKEVEN, TIME_EXIT
+        clean_reason = reason.upper() if reason else "MANUAL"
+        if "TARGET" in clean_reason or "TP" in clean_reason:
+            exit_code = "TP_HIT"
+        elif "BREAKEVEN" in clean_reason or ("STOP_LOSS" in clean_reason and self._breakeven_advanced.get(symbol, False)):
+            exit_code = "1R_BREAKEVEN"
+        elif "STOP_LOSS" in clean_reason or "SL" in clean_reason:
+            exit_code = "SL_HIT"
+        elif "1510" in clean_reason or "TIME" in clean_reason or "SQUARE_OFF" in clean_reason:
+            exit_code = "TIME_EXIT"
+        else:
+            exit_code = clean_reason
+
         now_ist = datetime.now(IST_TZ)
         exit_order = Order(
             order_id=str(uuid.uuid4()),
@@ -194,16 +207,19 @@ class OrderManager:
             quantity=pos.quantity,
             limit_price=limit_price,
             status=OrderStatus.PENDING_NEW,
+            exit_reason=exit_code,
             created_at_ist=now_ist,
         )
 
         self.orders[exit_order.order_id] = exit_order
         logger.info(
             f"[EXIT ORDER PLACED] {symbol} {exit_side.value} x {exit_order.quantity} @ Rs.{limit_price:.2f} "
-            f"(Reason: {reason})"
+            f"(Reason: {exit_code})"
         )
 
         executed_order = await self.broker.submit_order(exit_order)
+        if executed_order is not None and getattr(executed_order, "exit_reason", None) is None:
+            executed_order.exit_reason = exit_code
         return executed_order
 
     async def flatten_all_positions(self, reason: str) -> List[Order]:

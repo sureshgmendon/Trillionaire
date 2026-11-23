@@ -16,12 +16,14 @@ import {
   TrendingUp,
   Zap,
 } from "lucide-react";
-import { EngineStatus } from "@/types/telemetry";
+import { EngineStatus, Position, Tick } from "@/types/telemetry";
 import { ConnectionStatus } from "@/hooks/useTrillionaireStream";
 
 interface TopTelemetryBarProps {
   connectionStatus: ConnectionStatus;
   status: EngineStatus | null;
+  ticks?: Record<string, Tick>;
+  positions?: Position[];
   onEmergencyFlatten: () => Promise<{ success: boolean; message: string }>;
   onOpenReplayModal: () => void;
   onOpenSettingsModal: () => void;
@@ -33,6 +35,8 @@ interface TopTelemetryBarProps {
 export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
   connectionStatus,
   status,
+  ticks = {},
+  positions = [],
   onEmergencyFlatten,
   onOpenReplayModal,
   onOpenSettingsModal,
@@ -74,12 +78,61 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
     setTimeout(() => setFlattenToast(null), 5000);
   };
 
-  const dailyMtm = status?.daily_mtm ?? 0;
-  const realized = status?.realized_pnl ?? 0;
-  const unrealized = status?.unrealized_pnl ?? 0;
-  const allocatedCapital = status?.allocated_capital ?? 100000;
-  const mtmPct = allocatedCapital > 0 ? (dailyMtm / allocatedCapital) * 100 : 0;
-  const isProfit = dailyMtm >= 0;
+  // 1. Live Unrealized P&L Calculation on Every Live Incoming Market TICK (1-second)
+  const liveUnrealizedPnl = React.useMemo(() => {
+    if (!positions || positions.length === 0) {
+      return 0.0;
+    }
+    let totalUnrealized = 0;
+    for (const pos of positions) {
+      const sym = (pos as any).symbol || pos.tradingsymbol;
+      const avgPrice = (pos as any).avg_price ?? pos.average_entry_price ?? 0;
+      const currentLtp = (sym && ticks[sym]?.ltp) ?? pos.ltp ?? avgPrice;
+      const qty = pos.quantity ?? 0;
+      const isBuy = (pos.side as any) === "BUY" || qty > 0;
+
+      if (isBuy) {
+        totalUnrealized += (currentLtp - avgPrice) * Math.abs(qty);
+      } else {
+        totalUnrealized += (avgPrice - currentLtp) * Math.abs(qty);
+      }
+    }
+    return Math.round(totalUnrealized * 100) / 100;
+  }, [ticks, positions]);
+
+  // 2. Live Realized P&L & Total MTM Sync
+  const [liveRealizedPnl, setLiveRealizedPnl] = useState<number>(status?.realized_pnl ?? 0);
+
+  useEffect(() => {
+    if (status?.realized_pnl !== undefined && status?.realized_pnl !== null) {
+      setLiveRealizedPnl(status.realized_pnl);
+    }
+  }, [status?.realized_pnl]);
+
+  // Poll GET /api/v1/status every 3000ms as reconciliation fallback
+  useEffect(() => {
+    const pollStatus = async () => {
+      try {
+        const res = await fetch("/api/v1/status");
+        if (res.ok) {
+          const data = await res.json();
+          if (data && typeof data.realized_pnl === "number") {
+            setLiveRealizedPnl(data.realized_pnl);
+          }
+        }
+      } catch {
+        // Silently catch fetch errors during offline/tests
+      }
+    };
+
+    const interval = setInterval(pollStatus, 3000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const totalDailyMtm = Math.round((liveRealizedPnl + liveUnrealizedPnl) * 100) / 100;
+  const allocatedCapital = status?.allocated_capital || 100000;
+  const mtmPct = allocatedCapital > 0 ? (totalDailyMtm / allocatedCapital) * 100 : 0;
+  const isProfit = totalDailyMtm >= 0;
 
   
 
@@ -224,23 +277,23 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
             <div className="text-[10px] uppercase font-mono tracking-wider text-cockpit-muted flex items-center justify-end space-x-1">
               <span>Total Daily MTM</span>
               {isProfit ? (
-                <TrendingUp className="h-3 w-3 text-cockpit-green" />
+                <TrendingUp className="h-3 w-3 text-emerald-400" />
               ) : (
-                <TrendingDown className="h-3 w-3 text-cockpit-red" />
+                <TrendingDown className="h-3 w-3 text-rose-400" />
               )}
             </div>
             <div className="flex items-baseline justify-end space-x-2">
               <span
-                className={`font-mono text-lg font-bold tracking-tight ${
-                  isProfit ? "text-cockpit-green" : "text-cockpit-red"
+                className={`font-mono text-lg font-bold tracking-tight tabular-nums ${
+                  isProfit ? "text-emerald-400" : "text-rose-400"
                 }`}
               >
                 {isProfit ? "+" : ""}
-                ₹{dailyMtm.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                ₹{totalDailyMtm.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </span>
               <span
-                className={`text-xs font-mono font-medium ${
-                  isProfit ? "text-cockpit-green/80" : "text-cockpit-red/80"
+                className={`text-xs font-mono font-medium tabular-nums ${
+                  isProfit ? "text-emerald-400/80" : "text-rose-400/80"
                 }`}
               >
                 ({isProfit ? "+" : ""}
@@ -250,15 +303,15 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
             <div className="text-[10px] font-mono text-cockpit-muted flex items-center justify-end space-x-2">
               <span>
                 Realized:{" "}
-                <span className={realized >= 0 ? "text-cockpit-green" : "text-cockpit-red"}>
-                  ₹{realized.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                <span className={`tabular-nums font-semibold ${liveRealizedPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                  {liveRealizedPnl >= 0 ? "+" : ""}₹{liveRealizedPnl.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </span>
               </span>
               <span>•</span>
               <span>
                 Unrealized:{" "}
-                <span className={unrealized >= 0 ? "text-cockpit-green" : "text-cockpit-red"}>
-                  ₹{unrealized.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                <span className={`tabular-nums font-semibold ${liveUnrealizedPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                  {liveUnrealizedPnl >= 0 ? "+" : ""}₹{liveUnrealizedPnl.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </span>
               </span>
             </div>
@@ -374,8 +427,8 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
               </div>
               <div className="flex justify-between text-cockpit-muted">
                 <span>Current MTM:</span>
-                <span className={isProfit ? "text-cockpit-green" : "text-cockpit-red"}>
-                  ₹{dailyMtm.toFixed(2)}
+                <span className={isProfit ? "text-emerald-400" : "text-rose-400"}>
+                  ₹{totalDailyMtm.toFixed(2)}
                 </span>
               </div>
             </div>

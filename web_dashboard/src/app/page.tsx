@@ -23,6 +23,7 @@ export default function CockpitPage() {
     profiles,
     selectedSymbol,
     setSelectedSymbol,
+    exitPosition,
     triggerEmergencyFlatten,
     triggerReplay,
     startEngine,
@@ -43,6 +44,8 @@ export default function CockpitPage() {
       <TopTelemetryBar
         connectionStatus={connectionStatus}
         status={status}
+        ticks={ticks}
+        positions={positions}
         onEmergencyFlatten={triggerEmergencyFlatten}
         onOpenReplayModal={() => setIsReplayModalOpen(true)}
         onOpenSettingsModal={() => setIsSettingsModalOpen(true)}
@@ -81,6 +84,8 @@ export default function CockpitPage() {
             <PositionsAndOrdersTabs
               positions={positions}
               orders={orders}
+              ticks={ticks}
+              onExitPosition={exitPosition}
               signals={signals}
               anomalies={anomalies}
               riskAlerts={riskAlerts}

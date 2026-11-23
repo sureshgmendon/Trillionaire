@@ -158,15 +158,23 @@ class PortfolioRiskGatekeeper:
             f"@ {position.average_entry_price:.2f}"
         )
 
+    @property
+    def realized_pnl(self) -> float:
+        """Cumulative realized PnL for the current trading day in INR."""
+        return self.realized_daily_pnl
+
+    @realized_pnl.setter
+    def realized_pnl(self, value: float) -> None:
+        self.realized_daily_pnl = round(float(value), 2)
+
     def close_position(self, symbol: str, realized_pnl: float) -> Optional[Position]:
         """Removes an active position and updates realized daily PnL."""
         pos = self.open_positions.pop(symbol, None)
-        if pos is not None:
-            self.realized_daily_pnl = round(self.realized_daily_pnl + realized_pnl, 2)
-            logger.info(
-                f"[POSITION CLOSED] {symbol} realized PnL: Rs.{realized_pnl:,.2f} | "
-                f"Cumulative Realized: Rs.{self.realized_daily_pnl:,.2f}"
-            )
+        self.realized_daily_pnl = round(self.realized_daily_pnl + realized_pnl, 2)
+        logger.info(
+            f"[POSITION CLOSED] {symbol} realized PnL: Rs.{realized_pnl:,.2f} | "
+            f"Cumulative Realized: Rs.{self.realized_daily_pnl:,.2f}"
+        )
         return pos
 
     def get_total_daily_mtm(self) -> float:

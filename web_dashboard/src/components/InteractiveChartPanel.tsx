@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef, useState, useMemo } from "react";
+import React, { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import {
   createChart,
   ColorType,
@@ -34,6 +34,9 @@ export const InteractiveChartPanel: React.FC<InteractiveChartPanelProps> = ({
   const vwapSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const ema200SeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+
+  // User manual pan/zoom interaction flag
+  const userManuallyZoomedRef = useRef<boolean>(false);
 
   const [showVwap, setShowVwap] = useState(true);
   const [showEma200, setShowEma200] = useState(true);
@@ -113,8 +116,30 @@ export const InteractiveChartPanel: React.FC<InteractiveChartPanelProps> = ({
         text: `${ord.side} ${ord.filled_quantity}@₹${ord.average_fill_price || ord.limit_price}`,
       });
     }
-    return mList.sort((a, b) => (Number(a.time) - Number(b.time)));
+    return mList.sort((a, b) => Number(a.time) - Number(b.time));
   }, [orders, symbol]);
+
+  // Auto-Frame Recent Candles
+  const autoFrameRecentCandles = useCallback(() => {
+    if (!chartRef.current || chartData.length === 0) return;
+    const chart = chartRef.current;
+
+    // Reset autoScale on right price scale with defined top/bottom margins
+    chart.priceScale("right").applyOptions({
+      autoScale: true,
+      scaleMargins: { top: 0.12, bottom: 0.18 },
+    });
+
+    const totalBars = chartData.length;
+    if (totalBars <= 90) {
+      chart.timeScale().fitContent();
+    } else {
+      chart.timeScale().setVisibleLogicalRange({
+        from: Math.max(0, totalBars - 75),
+        to: totalBars + 3,
+      });
+    }
+  }, [chartData.length]);
 
   // Initialize TradingView Lightweight Chart
   useEffect(() => {
@@ -138,12 +163,14 @@ export const InteractiveChartPanel: React.FC<InteractiveChartPanelProps> = ({
       },
       rightPriceScale: {
         borderColor: "#1F2B44",
-        scaleMargins: { top: 0.1, bottom: 0.25 },
+        autoScale: true,
+        scaleMargins: { top: 0.12, bottom: 0.18 },
       },
       timeScale: {
         borderColor: "#1F2B44",
         timeVisible: true,
         secondsVisible: false,
+        rightOffset: 5,
       },
     });
 
@@ -188,6 +215,15 @@ export const InteractiveChartPanel: React.FC<InteractiveChartPanelProps> = ({
     vwapSeriesRef.current = vwapSeries;
     ema200SeriesRef.current = ema200Series;
 
+    // Track user manual interaction (wheel or pointer drag) to avoid hijacking zoom
+    const container = chartContainerRef.current;
+    const handleUserInteraction = () => {
+      userManuallyZoomedRef.current = true;
+    };
+    container.addEventListener("wheel", handleUserInteraction, { passive: true });
+    container.addEventListener("pointerdown", handleUserInteraction, { passive: true });
+    container.addEventListener("touchstart", handleUserInteraction, { passive: true });
+
     // Handle container resize
     const handleResize = () => {
       if (chartContainerRef.current) {
@@ -202,6 +238,9 @@ export const InteractiveChartPanel: React.FC<InteractiveChartPanelProps> = ({
     handleResize();
 
     return () => {
+      container.removeEventListener("wheel", handleUserInteraction);
+      container.removeEventListener("pointerdown", handleUserInteraction);
+      container.removeEventListener("touchstart", handleUserInteraction);
       window.removeEventListener("resize", handleResize);
       chart.remove();
     };
@@ -257,18 +296,18 @@ export const InteractiveChartPanel: React.FC<InteractiveChartPanelProps> = ({
     }
   }, [chartData, showVwap, showEma200, showVolume, markers]);
 
-  // Auto-fit chart timescale whenever symbol changes or candles are loaded
+  // Auto-fit chart viewport whenever selectedSymbol changes or initial candles hydrate
   useEffect(() => {
+    userManuallyZoomedRef.current = false;
     if (chartRef.current && chartData.length > 0) {
-      // Small timeout to allow series data ingestion by Lightweight Charts
       const timer = setTimeout(() => {
-        chartRef.current?.timeScale().fitContent();
+        autoFrameRecentCandles();
       }, 50);
       return () => clearTimeout(timer);
     }
-  }, [symbol, chartData.length]);
+  }, [symbol, chartData.length, autoFrameRecentCandles]);
 
-  // Handle live tick update into last candle
+  // Handle live tick update into last candle & keep current candle in view if not manually zoomed
   useEffect(() => {
     if (!tick || !candleSeriesRef.current || chartData.length === 0) return;
     const lastBar = chartData[chartData.length - 1];
@@ -282,6 +321,11 @@ export const InteractiveChartPanel: React.FC<InteractiveChartPanelProps> = ({
       low: updatedLow,
       close: tick.ltp,
     });
+
+    // While userManuallyZoomedRef is false, smoothly pin newest live candle
+    if (!userManuallyZoomedRef.current && chartRef.current) {
+      chartRef.current.timeScale().scrollToRealTime();
+    }
   }, [tick, chartData]);
 
   return (
@@ -302,7 +346,7 @@ export const InteractiveChartPanel: React.FC<InteractiveChartPanelProps> = ({
 
           {/* Live Price from Tick */}
           <div className="flex items-baseline space-x-2">
-            <span className="font-mono text-base font-bold text-white">
+            <span className="font-mono text-base font-bold text-white tabular-nums">
               ₹{tick?.ltp?.toFixed(2) || (chartData[chartData.length - 1]?.close || 0).toFixed(2)}
             </span>
             <span className="text-[11px] font-mono text-cockpit-muted">
@@ -311,7 +355,7 @@ export const InteractiveChartPanel: React.FC<InteractiveChartPanelProps> = ({
           </div>
         </div>
 
-        {/* Indicator Toggles */}
+        {/* Indicator Toggles & Reset/Fit View Button */}
         <div className="flex items-center space-x-2 text-xs font-mono">
           <button
             onClick={() => setShowVwap(!showVwap)}
@@ -348,12 +392,17 @@ export const InteractiveChartPanel: React.FC<InteractiveChartPanelProps> = ({
 
           <div className="h-3.5 w-px bg-cockpit-border" />
 
+          {/* Reset / Fit View Button */}
           <button
-            onClick={() => chartRef.current?.timeScale().fitContent()}
-            title="Fit Chart to View"
-            className="p-1 rounded bg-cockpit-surface hover:bg-cockpit-hover border border-cockpit-border text-cockpit-muted hover:text-white transition"
+            onClick={() => {
+              userManuallyZoomedRef.current = false;
+              autoFrameRecentCandles();
+            }}
+            title="Reset / Fit View (Auto-frame recent ~75 candles & center LTP)"
+            className="px-2 py-1 rounded bg-cockpit-surface hover:bg-cockpit-hover border border-cockpit-border text-cockpit-muted hover:text-white transition flex items-center space-x-1"
           >
-            <Maximize2 className="h-3.5 w-3.5" />
+            <Maximize2 className="h-3.5 w-3.5 text-blue-400" />
+            <span className="hidden sm:inline">Fit View</span>
           </button>
         </div>
       </div>

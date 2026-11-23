@@ -103,6 +103,7 @@ export interface Order {
   limit_price?: number;
   average_fill_price?: number;
   status: OrderStatus;
+  exit_reason?: string;
   created_at_ist: string;
 }
 
@@ -206,6 +207,7 @@ export type TelemetryEnvelope =
   | { type: "CANDLE"; timestamp_ist: string; payload: Candle }
   | { type: "SIGNAL"; timestamp_ist: string; payload: Signal }
   | { type: "ORDER"; timestamp_ist: string; payload: Order }
+  | { type: "EXIT"; timestamp_ist: string; payload: Order }
   | { type: "ANOMALY"; timestamp_ist: string; payload: AnomalyAlert }
   | { type: "RISK"; timestamp_ist: string; payload: RiskAlert }
   | { type: "SNAPSHOT"; timestamp_ist: string; payload: SnapshotPayload };

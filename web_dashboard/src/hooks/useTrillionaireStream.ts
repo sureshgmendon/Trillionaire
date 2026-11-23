@@ -162,17 +162,26 @@ export function useTrillionaireStream() {
         setSignals((prev) => [sig, ...prev.slice(0, 99)]);
         break;
       }
-      case "ORDER": {
+      case "ORDER":
+      case "EXIT": {
         const ord = envelope.payload;
-        setOrders((prev) => [ord, ...prev.slice(0, 99)]);
-        // Refetch positions on order fill or update
+        setOrders((prev) => {
+          const exists = prev.some((o) => o.order_id === ord.order_id);
+          if (exists) {
+            return prev.map((o) => (o.order_id === ord.order_id ? ord : o));
+          }
+          return [ord, ...prev.slice(0, 99)];
+        });
+        // Refetch positions and status on order fill or update
         fetch(`${API_BASE_URL}/api/v1/positions`)
           .then((r) => r.json())
           .then((p) => setPositions(p))
           .catch(() => {});
         fetch(`${API_BASE_URL}/api/v1/status`)
           .then((r) => r.json())
-          .then((s) => setStatus(s))
+          .then((s) => {
+            if (s) setStatus(s);
+          })
           .catch(() => {});
         break;
       }
@@ -301,6 +310,65 @@ export function useTrillionaireStream() {
     };
   }, [fetchInitialState, connectWebSocket]);
 
+  // 7. Single Position Quick Exit Action
+  const exitPosition = useCallback(
+    async (symbol: string, reason: string = "UI_MANUAL_EXIT") => {
+      try {
+        const resp = await fetch(
+          `${API_BASE_URL}/api/v1/control/positions/${encodeURIComponent(symbol)}/exit?reason=${encodeURIComponent(reason)}`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-API-Key": ADMIN_KEY,
+            },
+          }
+        );
+        if (resp.ok) {
+          const [pRes, sRes] = await Promise.allSettled([
+            fetch(`${API_BASE_URL}/api/v1/positions`),
+            fetch(`${API_BASE_URL}/api/v1/status`),
+          ]);
+          if (pRes.status === "fulfilled" && pRes.value.ok) {
+            setPositions(await pRes.value.json());
+          }
+          if (sRes.status === "fulfilled" && sRes.value.ok) {
+            setStatus(await sRes.value.json());
+          }
+          return { success: true, message: `Position ${symbol} exited successfully.` };
+        } else {
+          const err = await resp.json().catch(() => ({}));
+          return { success: false, message: err.detail || `Failed to exit ${symbol}` };
+        }
+      } catch (e: any) {
+        return { success: false, message: e.message || "Network error" };
+      }
+    },
+    []
+  );
+
+  // 8. Dynamic Live Unrealized P&L Calculation across active positions
+  const liveUnrealizedPnl = (function calculateLiveUnrealized() {
+    if (!positions || positions.length === 0) {
+      return 0.0;
+    }
+    let total = 0;
+    for (const pos of positions) {
+      const sym = (pos as any).symbol || pos.tradingsymbol;
+      const avgPrice = (pos as any).avg_price ?? pos.average_entry_price ?? 0;
+      const currentLtp = (sym && ticks[sym]?.ltp) ?? pos.ltp ?? avgPrice;
+      const qty = pos.quantity ?? 0;
+      const isBuy = (pos.side as any) === "BUY" || qty > 0;
+
+      if (isBuy) {
+        total += (currentLtp - avgPrice) * Math.abs(qty);
+      } else {
+        total += (avgPrice - currentLtp) * Math.abs(qty);
+      }
+    }
+    return Math.round(total * 100) / 100;
+  })();
+
   return {
     connectionStatus,
     status,
@@ -314,6 +382,8 @@ export function useTrillionaireStream() {
     profiles,
     selectedSymbol,
     setSelectedSymbol,
+    liveUnrealizedPnl,
+    exitPosition,
     triggerEmergencyFlatten,
     triggerReplay,
     startEngine,

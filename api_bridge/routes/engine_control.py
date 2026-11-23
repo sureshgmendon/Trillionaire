@@ -195,6 +195,32 @@ async def trigger_emergency_kill_switch(
     }
 
 
+@router.post("/control/positions/{symbol}/exit", dependencies=[Depends(verify_admin_api_key)])
+async def exit_single_position(
+    symbol: str,
+    reason: str = Query("UI_MANUAL_EXIT", description="Reason for exiting position"),
+    engine: TrillionaireEngine = Depends(get_engine),
+) -> Dict[str, Any]:
+    """
+    Closes a specific open position immediately.
+    Requires X-API-Key header.
+    """
+    clean_sym = symbol.upper()
+    if clean_sym not in engine.order_manager.open_positions:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No active open position found for {clean_sym}",
+        )
+    order = await engine.order_manager.exit_position(clean_sym, reason=reason)
+    return {
+        "status": "executed",
+        "symbol": clean_sym,
+        "reason": reason,
+        "order": order.model_dump(mode="json") if order else None,
+        "timestamp_ist": datetime.now(IST_TZ).isoformat(),
+    }
+
+
 def _resolve_replay_symbols(symbols: Optional[List[str]]) -> List[str]:
     """Resolves target symbols defaulting to multi-sector basket with parent indices."""
     if not symbols:

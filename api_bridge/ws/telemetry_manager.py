@@ -191,6 +191,15 @@ class TelemetryManager:
         }
         await self.broadcast(envelope)
 
+        # Broadcast EXIT event if order is an exit execution
+        if getattr(order, "exit_reason", None) or (getattr(order.status, "value", str(order.status)) in ("FILLED", "COMPLETE") and getattr(order, "is_exit", False)):
+            exit_envelope = {
+                "type": "EXIT",
+                "timestamp_ist": order.created_at_ist.isoformat(),
+                "payload": order_dict,
+            }
+            await self.broadcast(exit_envelope)
+
     async def on_anomaly_event(self, event: AnomalyAlertEvent) -> None:
         """Handles AnomalyAlertEvent: appends to buffer and broadcasts ANOMALY envelope."""
         anomaly_dict = {

@@ -166,6 +166,7 @@ class Order(StrictBaseModel):
     trigger_price: Optional[float] = Field(default=None, gt=0, description="Trigger price for stop loss limit")
     average_fill_price: Optional[float] = Field(default=None, ge=0, description="Volume-weighted execution price")
     status: OrderStatus = Field(default=OrderStatus.PENDING_NEW, description="Lifecycle order status")
+    exit_reason: Optional[str] = Field(default=None, description="Trade exit reason (TP_HIT, SL_HIT, 1R_BREAKEVEN, TIME_EXIT, etc.)")
     created_at_ist: datetime = Field(..., description="Creation timestamp in IST")
 
     @field_validator("created_at_ist", mode="before")
