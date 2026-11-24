@@ -1,14 +1,16 @@
 """
 Trillionaire Sentinel - Pre-Market News & Headline Aggregator
-Asynchronously fetches overnight global market cues, US tech indicators,
-and domestic Indian equity corporate announcements via HTTP adapters and mock providers.
+Asynchronously fetches domestic Indian equity stock corporate announcements
+and market headlines via verified Economic Times Stocks RSS feeds.
+Zero LLM tokens used for news ingestion.
 """
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 import asyncio
 import re
-from typing import List, Optional
+from typing import List, Optional, Union
 import xml.etree.ElementTree as ET
 import httpx
 from loguru import logger
@@ -23,39 +25,103 @@ class NewsItem:
     """Standardized pre-market news item."""
     headline: str
     summary: str = ""
-    source: str = "AGGREGATOR"
+    source: str = "Economic Times"
     published_at: datetime = field(default_factory=lambda: datetime.now(IST_TZ))
-    category: str = "GLOBAL_MACRO"  # GLOBAL_MACRO, US_MARKETS, DOMESTIC_CORPORATE, REGULATORY, MARKET_NOTICE
+    category: str = "DOMESTIC_CORPORATE"  # DOMESTIC_CORPORATE, REGULATORY, MARKET_NOTICE, GLOBAL_MACRO
     symbols_mentioned: List[str] = field(default_factory=list)
     sectors_mentioned: List[str] = field(default_factory=list)
-    url: str = ""
+    url: Optional[str] = None
+
+
+def _parse_rfc822_date(date_str: Optional[str]) -> datetime:
+    """Parses standard RSS pubDate string into timezone-aware IST datetime."""
+    if not date_str:
+        return datetime.now(IST_TZ)
+    try:
+        dt = parsedate_to_datetime(date_str.strip())
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=IST_TZ)
+        return dt.astimezone(IST_TZ)
+    except Exception:
+        return datetime.now(IST_TZ)
 
 
 class AsyncNewsFetcher:
-    """Fetches overnight news headlines from external APIs or deterministic mock providers."""
+    """Fetches real Indian stock headlines from Economic Times RSS feeds."""
+
+    # Primary and secondary verified Economic Times RSS endpoints
+    PRIMARY_STOCKS_RSS: str = "https://economictimes.indiatimes.com/markets/stocks/rssfeeds/2146842.cms"
+    SECONDARY_MARKETS_RSS: str = "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms"
 
     def __init__(self, mock_news: Optional[List[NewsItem]] = None):
         self._mock_news = mock_news
+
+    @staticmethod
+    def parse_rss_items(
+        xml_content: Union[str, bytes],
+        source_name: str = "Economic Times",
+    ) -> List[NewsItem]:
+        """
+        Parses XML content (handles single-line XML and CDATA blocks cleanly)
+        into standardized NewsItem objects.
+        """
+        if not xml_content:
+            return []
+        if isinstance(xml_content, str):
+            xml_content = xml_content.encode("utf-8")
+
+        parsed_items: List[NewsItem] = []
+        try:
+            root = ET.fromstring(xml_content)
+            for elem in root.findall(".//item"):
+                title_elem = elem.find("title")
+                link_elem = elem.find("link")
+                pub_elem = elem.find("pubDate")
+                desc_elem = elem.find("description")
+
+                title = title_elem.text.strip() if title_elem is not None and title_elem.text else ""
+                link = link_elem.text.strip() if link_elem is not None and link_elem.text else ""
+                pub_str = pub_elem.text.strip() if pub_elem is not None and pub_elem.text else ""
+                desc = desc_elem.text.strip() if desc_elem is not None and desc_elem.text else ""
+
+                if not title:
+                    continue
+
+                clean_title = re.sub(r"<[^>]+>", "", title).strip()
+                clean_desc = re.sub(r"<[^>]+>", "", desc).strip()
+                published_at = _parse_rfc822_date(pub_str)
+
+                parsed_items.append(
+                    NewsItem(
+                        headline=clean_title,
+                        summary=clean_desc or clean_title,
+                        source=source_name,
+                        published_at=published_at,
+                        category="DOMESTIC_CORPORATE",
+                        url=link or None,
+                    )
+                )
+        except Exception as e:
+            logger.warning(f"[RSS NEWS FETCHER] Error parsing RSS XML: {e}")
+        return parsed_items
 
     async def fetch_pre_market_news(self) -> List[NewsItem]:
         """
         Fetches headlines available prior to 08:30 AM IST.
         Uses injected mock news if provided; otherwise queries external API if configured,
-        or falls back to canonical overnight market indicators.
+        or fetches live Economic Times Stocks RSS headlines.
         """
         if self._mock_news is not None:
             logger.info(f"Using {len(self._mock_news)} injected mock headlines for sentinel triage.")
             return self._mock_news
 
-        # If live News API key is provided, attempt live fetch
         if settings.news_api_key:
             try:
                 return await self._fetch_live_news()
             except Exception as e:
-                logger.warning(f"Live news API fetch failed: {e}. Falling back to default cues.")
+                logger.warning(f"Live news API fetch failed: {e}. Falling back to Economic Times RSS.")
 
-        # Default clean overnight market indicators
-        return self._get_default_overnight_cues()
+        return await self.fetch_rss_headlines()
 
     async def _fetch_live_news(self) -> List[NewsItem]:
         """Queries external financial news provider via httpx."""
@@ -71,7 +137,7 @@ class AsyncNewsFetcher:
             resp.raise_for_status()
             data = resp.json()
             items: List[NewsItem] = []
-            for art in data.get("articles", [])[:15]:
+            for art in data.get("articles", [])[:20]:
                 items.append(
                     NewsItem(
                         headline=art.get("title", ""),
@@ -79,19 +145,33 @@ class AsyncNewsFetcher:
                         source=art.get("source", {}).get("name", "NewsAPI"),
                         published_at=datetime.now(IST_TZ),
                         category="DOMESTIC_CORPORATE",
+                        url=art.get("url") or None,
                     )
                 )
             return items
 
     def get_default_overnight_cues(self) -> List[NewsItem]:
-        """Synchronously returns baseline overnight news items or injected mock items."""
+        """Synchronously returns injected mock items or holiday notice (no fake placeholders)."""
         if self._mock_news is not None:
             return self._mock_news
-        return self._get_default_overnight_cues()
+        today_ist = datetime.now(IST_TZ).date()
+        holiday_name = get_market_holiday_name(today_ist)
+        if holiday_name:
+            return [
+                NewsItem(
+                    headline=f"NSE MARKET NOTICE: Indian Equity Markets Closed Today for {holiday_name}",
+                    summary=f"NSE Equity Cash & Derivatives segments remain closed today in observance of {holiday_name}.",
+                    source="NSE Official",
+                    published_at=datetime.now(IST_TZ),
+                    category="MARKET_NOTICE",
+                    url=None,
+                )
+            ]
+        return []
 
     async def fetch_rss_headlines(self) -> List[NewsItem]:
         """
-        Token-free news fetcher querying Google News India RSS & Economic Times Markets RSS.
+        Token-free news fetcher querying Economic Times Stocks RSS feed.
         Parses XML items into NewsItem objects with direct article URLs, deduplicating headlines.
         Prepends an NSE Market Notice if today is an exchange trading holiday.
         """
@@ -110,134 +190,50 @@ class AsyncNewsFetcher:
                     source="NSE Official",
                     published_at=now,
                     category="MARKET_NOTICE",
-                    url="https://www.nseindia.com/resources/exchange-communication-holidays",
+                    url=None,
                 )
             )
 
-        rss_feeds = [
-            (
-                "https://news.google.com/rss/search?q=(NSE+OR+Nifty+50+OR+Sensex+OR+RBI+OR+SEBI+OR+Reliance+OR+HDFC+Bank+OR+Infosys+OR+TCS)&hl=en-IN&gl=IN&ceid=IN:en",
-                "Google News",
-            ),
-            (
-                "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",
-                "Economic Times",
-            ),
+        rss_urls = [
+            self.PRIMARY_STOCKS_RSS,
+            self.SECONDARY_MARKETS_RSS,
         ]
 
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
+        headers = {"User-Agent": "Mozilla/5.0"}
 
-        async def _fetch_feed(client: httpx.AsyncClient, url: str, default_source: str):
+        async def _fetch_url(client: httpx.AsyncClient, url: str) -> Optional[bytes]:
             try:
                 resp = await client.get(url, headers=headers)
                 if resp.status_code == 200:
-                    return resp.content, default_source
+                    return resp.content
             except Exception as ex:
                 logger.debug(f"[RSS NEWS FETCHER] Error fetching {url}: {ex}")
-            return None, default_source
+            return None
 
-        raw_feed_results = []
+        raw_contents: List[Optional[bytes]] = []
         try:
-            async with httpx.AsyncClient(timeout=6.0) as client:
-                tasks = [_fetch_feed(client, url, src) for url, src in rss_feeds]
-                raw_feed_results = await asyncio.gather(*tasks, return_exceptions=True)
+            async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=10.0) as client:
+                tasks = [_fetch_url(client, u) for u in rss_urls]
+                raw_contents = await asyncio.gather(*tasks, return_exceptions=False)
         except Exception as e:
             logger.warning(f"[RSS NEWS FETCHER] Async HTTP client failed: {e}")
 
         seen_keys = set()
-        for res in raw_feed_results:
-            if isinstance(res, tuple) and res[0] is not None:
-                content, default_source = res
-                try:
-                    root = ET.fromstring(content)
-                    for elem in root.findall(".//item"):
-                        raw_title = elem.findtext("title", "").strip()
-                        raw_link = elem.findtext("link", "").strip()
-                        raw_desc = elem.findtext("description", "").strip()
-
-                        # Strip HTML tags from description if present
-                        clean_desc = re.sub(r"<[^>]+>", "", raw_desc).strip()
-
-                        source_elem = elem.find("source")
-                        source_name = (
-                            source_elem.text.strip()
-                            if source_elem is not None and source_elem.text
-                            else default_source
-                        )
-
-                        if not raw_title:
-                            continue
-
-                        # Clean title: Google news titles often end with " - Source"
-                        clean_title = raw_title
-                        if default_source == "Google News" and " - " in clean_title:
-                            parts = clean_title.rsplit(" - ", 1)
-                            clean_title = parts[0].strip()
-                            if not source_name or source_name == "Google News":
-                                source_name = parts[1].strip()
-
-                        # Deduplication key
-                        norm_key = re.sub(r"[^a-zA-Z0-9]", "", clean_title.lower())[:45]
-                        if norm_key in seen_keys:
-                            continue
-                        seen_keys.add(norm_key)
-
-                        items.append(
-                            NewsItem(
-                                headline=clean_title,
-                                summary=clean_desc or clean_title,
-                                source=source_name or "Financial Wire",
-                                published_at=now,
-                                category="DOMESTIC_CORPORATE",
-                                url=raw_link or "https://www.nseindia.com",
-                            )
-                        )
-                        if len(items) >= 20:
-                            break
-                except Exception as ex:
-                    logger.debug(f"[RSS NEWS FETCHER] XML parse error: {ex}")
-
-            if len(items) >= 20:
+        news_count = 0
+        for content in raw_contents:
+            if not content:
+                continue
+            parsed = self.parse_rss_items(content, source_name="Economic Times")
+            for item in parsed:
+                norm_key = re.sub(r"[^a-zA-Z0-9]", "", item.headline.lower())[:45]
+                if norm_key in seen_keys:
+                    continue
+                seen_keys.add(norm_key)
+                items.append(item)
+                news_count += 1
+                if news_count >= 20:
+                    break
+            if news_count >= 20:
                 break
 
-        if not items:
-            return self._get_default_overnight_cues()
-        if holiday_name and len(items) == 1:
-            # Only holiday notice present, append default cues with URLs
-            return items + self._get_default_overnight_cues()
         return items
-
-    def _get_default_overnight_cues(self) -> List[NewsItem]:
-        """Returns baseline neutral overnight market summary with URLs."""
-        now = datetime.now(IST_TZ)
-        return [
-            NewsItem(
-                headline="US Markets Close Mixed: S&P 500 flat, NASDAQ up 0.1% as bond yields steady",
-                summary="Major US indexes ended little changed with modest gains in megacap technology.",
-                source="Global Markets Desk",
-                published_at=now,
-                category="US_MARKETS",
-                sectors_mentioned=["NIFTY 50"],
-                url="https://www.bloomberg.com/markets",
-            ),
-            NewsItem(
-                headline="Asian Markets Open Steady: Nikkei and Hang Seng trade with mild gains",
-                summary="Asian equities opened higher tracking stable global cues and currency stability.",
-                source="Asia Equities Wire",
-                published_at=now,
-                category="GLOBAL_MACRO",
-                sectors_mentioned=["NIFTY 50"],
-                url="https://www.reuters.com/markets/asia/",
-            ),
-            NewsItem(
-                headline="NSE Market Ticker: Live telemetry & risk gatekeepers active",
-                summary="Domestic equity monitoring and volatility sentinels streaming.",
-                source="NSE Live",
-                published_at=now,
-                category="DOMESTIC_CORPORATE",
-                sectors_mentioned=["NIFTY 50"],
-                url="https://www.nseindia.com",
-            ),
-        ]

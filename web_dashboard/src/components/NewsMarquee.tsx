@@ -14,22 +14,6 @@ export const NewsMarquee: React.FC<NewsMarqueeProps> = ({ headlines = [] }) => {
       ? headlines
       : [
           {
-            title: "US Markets Close Mixed: S&P 500 flat, NASDAQ up 0.1% as bond yields steady",
-            summary: "",
-            source: "Global Markets",
-            time: "08:30 IST",
-            category: "US_MARKETS",
-            url: "https://www.bloomberg.com/markets",
-          },
-          {
-            title: "Asian Markets Open Steady: Nikkei and Hang Seng trade with mild gains",
-            summary: "",
-            source: "Asia Wire",
-            time: "08:35 IST",
-            category: "GLOBAL_MACRO",
-            url: "https://www.reuters.com/markets/asia/",
-          },
-          {
             title: "NSE Market Ticker: Live telemetry & risk gatekeepers active",
             summary: "",
             source: "NSE Live",
