@@ -113,6 +113,7 @@ async def get_engine_status(engine: TrillionaireEngine = Depends(get_engine)) ->
         "data_feeder": st.get("data_feeder", "ZERODHA_KITE"),
         "is_running": st["is_running"],
         "is_booted": st["is_booted"],
+        "trading_paused": st.get("trading_paused", False),
         "capital_tier": st["capital_tier"],
         "allocated_capital": st["allocated_capital"],
         "daily_mtm": st["daily_total_mtm"],
@@ -122,6 +123,7 @@ async def get_engine_status(engine: TrillionaireEngine = Depends(get_engine)) ->
         "profit_floor_armed": st["profit_lock_armed"],
         "open_positions_count": st["open_positions_count"],
         "active_stocks_count": len(engine.strategy_runner.profiles),
+        "milestones": st.get("milestones", engine.get_lifecycle_milestones()),
         "funnel_metrics": st.get("funnel_metrics", {
             "candles_evaluated": 0,
             "passed_stock_rule": 0,
@@ -130,6 +132,18 @@ async def get_engine_status(engine: TrillionaireEngine = Depends(get_engine)) ->
         }),
         "timestamp_ist": datetime.now(IST_TZ).isoformat(),
     }
+
+
+@router.get("/engine/milestones")
+async def get_engine_milestones(engine: TrillionaireEngine = Depends(get_engine)) -> Dict[str, Any]:
+    """Returns structured 5-milestone pipeline readiness state (kite_auth, universe_warmed, ticker_connected, ticks_flowing, strategy_armed)."""
+    return engine.get_lifecycle_milestones()
+
+
+@router.get("/sentinel/summary")
+async def get_sentinel_summary(engine: TrillionaireEngine = Depends(get_engine)) -> Dict[str, Any]:
+    """Returns latest financial news headlines, Gemini brief, and tagged high-risk stocks."""
+    return engine.sentinel.get_sentinel_summary()
 
 
 @router.get("/positions")

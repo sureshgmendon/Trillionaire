@@ -11,6 +11,7 @@ Coordinates order execution, rate limiting, and real-time position bracket monit
 
 from collections import deque
 from datetime import datetime
+import json
 import time
 from typing import Any, Dict, List, Optional
 import uuid
@@ -73,6 +74,57 @@ class OrderManager:
 
         # Wire up event subscribers
         self._register_subscribers()
+
+    def _persist_order_to_redis(self, order: Order) -> None:
+        """Mirrors order state to Redis hash trillionaire:orders:{YYYY-MM-DD} with 48h TTL."""
+        try:
+            import redis
+            from config.settings import settings
+            r = redis.from_url(
+                settings.redis_url,
+                decode_responses=True,
+                socket_connect_timeout=0.2,
+                socket_timeout=0.2,
+            )
+            today_iso = datetime.now(IST_TZ).date().isoformat()
+            key = f"trillionaire:orders:{today_iso}"
+            order_data = {
+                "order_id": order.order_id,
+                "signal_id": order.signal_id,
+                "tradingsymbol": order.tradingsymbol,
+                "side": order.side.value if hasattr(order.side, "value") else str(order.side),
+                "product": order.product,
+                "order_type": order.order_type.value if hasattr(order.order_type, "value") else str(order.order_type),
+                "quantity": order.quantity,
+                "filled_quantity": order.filled_quantity,
+                "limit_price": order.limit_price,
+                "average_fill_price": order.average_fill_price,
+                "status": order.status.value if hasattr(order.status, "value") else str(order.status),
+                "exit_reason": order.exit_reason,
+                "created_at_ist": order.created_at_ist.isoformat() if order.created_at_ist else None,
+                "broker_order_id": order.broker_order_id,
+            }
+            r.hset(key, order.order_id, json.dumps(order_data))
+            r.expire(key, 172800)  # 48h TTL
+        except Exception as e:
+            logger.debug(f"[REDIS ORDER PERSIST] Bypassed: {e}")
+
+    def _persist_realized_pnl_to_redis(self, realized_pnl: float) -> None:
+        """Mirrors today's cumulative realized PnL to Redis under trillionaire:realized_pnl:{YYYY-MM-DD} with 48h TTL."""
+        try:
+            import redis
+            from config.settings import settings
+            r = redis.from_url(
+                settings.redis_url,
+                decode_responses=True,
+                socket_connect_timeout=0.2,
+                socket_timeout=0.2,
+            )
+            today_iso = datetime.now(IST_TZ).date().isoformat()
+            key = f"trillionaire:realized_pnl:{today_iso}"
+            r.set(key, str(round(realized_pnl, 2)), ex=172800)
+        except Exception as e:
+            logger.debug(f"[REDIS PNL PERSIST] Bypassed: {e}")
 
     def _register_subscribers(self) -> None:
         """Subscribes to EventBus topics."""
@@ -144,6 +196,7 @@ class OrderManager:
         self._breakeven_advanced[sym] = False
 
         self.orders[order.order_id] = order
+        self._persist_order_to_redis(order)
         logger.info(
             f"[ORDER SUBMITTED] {order.tradingsymbol} {order.side.value} x {order.quantity} "
             f"@ Marketable Limit Rs.{order.limit_price:.2f} (SL: {signal.stop_loss}, TP: {signal.target_price})"
@@ -212,6 +265,7 @@ class OrderManager:
         )
 
         self.orders[exit_order.order_id] = exit_order
+        self._persist_order_to_redis(exit_order)
         logger.info(
             f"[EXIT ORDER PLACED] {symbol} {exit_side.value} x {exit_order.quantity} @ Rs.{limit_price:.2f} "
             f"(Reason: {exit_code})"
@@ -245,6 +299,7 @@ class OrderManager:
         """
         order = event.order
         self.orders[order.order_id] = order
+        self._persist_order_to_redis(order)
         sym = order.tradingsymbol
 
         if order.status == OrderStatus.FILLED:
@@ -306,6 +361,7 @@ class OrderManager:
                     # Notify risk gatekeeper
                     if self.risk_gatekeeper is not None:
                         self.risk_gatekeeper.close_position(sym, realized_pnl)
+                        self._persist_realized_pnl_to_redis(self.risk_gatekeeper.realized_pnl)
 
                     logger.info(
                         f"[STATE MACHINE] Position closed: {sym} | Entry: {pos.average_entry_price:.2f} | "

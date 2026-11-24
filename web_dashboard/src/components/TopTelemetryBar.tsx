@@ -4,7 +4,9 @@ import React, { useState, useEffect } from "react";
 import {
   Activity,
   AlertTriangle,
+  CheckCircle2,
   Clock,
+  Pause,
   Play,
   Power,
   Radio,
@@ -26,9 +28,11 @@ interface TopTelemetryBarProps {
   positions?: Position[];
   onEmergencyFlatten: () => Promise<{ success: boolean; message: string }>;
   onOpenReplayModal: () => void;
-  onOpenSettingsModal: () => void;
+  onOpenSettingsModal: (initialTab?: string) => void;
   onStartEngine: () => Promise<void>;
   onStopEngine: () => Promise<void>;
+  onPauseTrading?: () => Promise<void>;
+  onResumeTrading?: () => Promise<void>;
   onRefresh: () => void;
 }
 
@@ -42,6 +46,8 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
   onOpenSettingsModal,
   onStartEngine,
   onStopEngine,
+  onPauseTrading,
+  onResumeTrading,
   onRefresh,
 }) => {
   const [istTime, setIstTime] = useState<string>("");
@@ -240,6 +246,26 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
             </span>
           </a>
 
+          {/* 5-Milestone Pipeline Readiness Pill */}
+          {status?.milestones && (
+            <button
+              onClick={() => onOpenSettingsModal("broker")}
+              title={`Engine Pipeline Readiness: ${status.milestones.passed_count}/${status.milestones.total_count} milestones passed. Click to inspect Feeder & Broker pipeline details.`}
+              className={`px-2 py-0.5 rounded border text-[11px] font-mono font-semibold transition flex items-center space-x-1.5 cursor-pointer ${
+                status.milestones.passed_count === status.milestones.total_count
+                  ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/25"
+                  : status.milestones.holiday
+                  ? "bg-amber-500/15 border-amber-500/40 text-amber-400 hover:bg-amber-500/25"
+                  : status.milestones.passed_count <= 2
+                  ? "bg-rose-500/15 border-rose-500/40 text-rose-400 hover:bg-rose-500/25"
+                  : "bg-cyan-500/15 border-cyan-500/40 text-cyan-400 hover:bg-cyan-500/25"
+              }`}
+            >
+              <CheckCircle2 className="h-3 w-3" />
+              <span>{status.milestones.summary_label}</span>
+            </button>
+          )}
+
           <div className="h-3.5 w-px bg-cockpit-border" />
 
           {/* Tier Pill */}
@@ -332,16 +358,36 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
 
           {/* Action Buttons */}
           <div className="flex items-center space-x-2">
-            {/* Start / Stop Engine Toggle */}
+            {/* Safe Pause / Resume Trading Toggle & Engine Start */}
             {status?.is_running ? (
-              <button
-                onClick={onStopEngine}
-                title="Stop Live Trading Engine"
-                className="px-2.5 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/50 text-amber-400 font-mono text-xs flex items-center space-x-1.5 transition"
-              >
-                <Square className="h-3.5 w-3.5 fill-current" />
-                <span className="hidden md:inline font-semibold">Stop Engine</span>
-              </button>
+              <div className="flex items-center space-x-1">
+                {status?.trading_paused ? (
+                  <button
+                    onClick={onResumeTrading}
+                    title="Resume Trading — Re-arm Strategy Scanner & Order Placement"
+                    className="px-2.5 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/50 text-emerald-400 font-mono text-xs flex items-center space-x-1.5 transition"
+                  >
+                    <Play className="h-3.5 w-3.5 fill-current" />
+                    <span className="hidden md:inline font-semibold">Resume Trading</span>
+                  </button>
+                ) : (
+                  <button
+                    onClick={onPauseTrading}
+                    title="Pause Trading — Skips Entry Signals while Feeds & Ticker Stream Live"
+                    className="px-2.5 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/50 text-amber-400 font-mono text-xs flex items-center space-x-1.5 transition"
+                  >
+                    <Pause className="h-3.5 w-3.5 fill-current" />
+                    <span className="hidden md:inline font-semibold">Pause Trading</span>
+                  </button>
+                )}
+                <button
+                  onClick={onStopEngine}
+                  title="Stop Live Trading Engine"
+                  className="p-1.5 rounded-lg bg-cockpit-surface hover:bg-rose-500/20 border border-cockpit-border hover:border-rose-500/40 text-cockpit-muted hover:text-rose-400 transition"
+                >
+                  <Square className="h-3.5 w-3.5 fill-current" />
+                </button>
+              </div>
             ) : (
               <button
                 onClick={onStartEngine}
@@ -355,7 +401,7 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
 
             {/* Settings & Credentials Modal Trigger */}
             <button
-              onClick={onOpenSettingsModal}
+              onClick={() => onOpenSettingsModal()}
               title="Configure API Keys, Mode & Capital Tier"
               className="px-2.5 py-1.5 rounded-lg bg-cockpit-surface hover:bg-cockpit-hover border border-cockpit-border text-cockpit-text hover:text-white transition flex items-center space-x-1.5 text-xs font-medium font-mono"
             >

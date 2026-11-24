@@ -42,6 +42,8 @@ class SentinelOrchestrator:
         self.artifacts_path = artifacts_path
         self.enable_redis = enable_redis
         self._cached_tags: Dict[str, NewsSentinelTag] = {}
+        self.latest_headlines: List[Dict[str, Any]] = []
+        self.gemini_brief: str = ""
         # Try loading existing manifest if available
         self.load_latest_manifest()
 
@@ -61,6 +63,17 @@ class SentinelOrchestrator:
         # 1. News items
         if news_items is None:
             news_items = self.fetcher.get_default_overnight_cues()
+
+        self.latest_headlines = [
+            {
+                "title": item.headline,
+                "summary": item.summary,
+                "source": item.source,
+                "time": item.published_at.strftime("%H:%M IST"),
+                "category": item.category,
+            }
+            for item in news_items
+        ]
 
         # 2. Rule-based classification
         news_results = self.classifier.classify_rule_based(news_items)
@@ -83,9 +96,83 @@ class SentinelOrchestrator:
         if news_items is None:
             news_items = await self.fetcher.fetch_pre_market_news()
 
-        news_results = await self.classifier.classify_news(news_items)
+        self.latest_headlines = [
+            {
+                "title": item.headline,
+                "summary": item.summary,
+                "source": item.source,
+                "time": item.published_at.strftime("%H:%M IST"),
+                "category": item.category,
+            }
+            for item in news_items
+        ]
+
+        news_results = await self.classifier.classify_news(news_items, is_premarket=True)
 
         return self._merge_and_save_tags(news_results, current_date_ist, now_dt)
+
+    async def refresh_intraday_news(self) -> Dict[str, Any]:
+        """
+        Fetches fresh RSS headlines every 15 minutes token-free (Google News / NSE RSS),
+        updates marquee telemetry, and dynamically applies risk tags if high-severity events occur.
+        """
+        items = await self.fetcher.fetch_rss_headlines()
+        now_dt = datetime.now(IST_TZ)
+        self.latest_headlines = [
+            {
+                "title": item.headline,
+                "summary": item.summary,
+                "source": item.source,
+                "time": item.published_at.strftime("%H:%M IST"),
+                "category": item.category,
+            }
+            for item in items
+        ]
+        news_results = await self.classifier.classify_news(items, is_premarket=False)
+        self._merge_and_save_tags(news_results, now_dt.date(), now_dt)
+        return self.get_sentinel_summary()
+
+    def get_sentinel_summary(self) -> Dict[str, Any]:
+        """Returns structured summary of headlines, Gemini briefing, and tagged high-risk stocks."""
+        now = datetime.now(IST_TZ)
+        high_risk = []
+        for sym, tag in self._cached_tags.items():
+            if tag.risk_multiplier < 1.0 or tag.status != SentinelStatus.NORMAL:
+                high_risk.append({
+                    "symbol": sym,
+                    "status": tag.status.value,
+                    "risk_multiplier": tag.risk_multiplier,
+                    "reason": tag.reason,
+                })
+
+        headlines = self.latest_headlines
+        if not headlines:
+            default_cues = self.fetcher.get_default_overnight_cues()
+            headlines = [
+                {
+                    "title": item.headline,
+                    "summary": item.summary,
+                    "source": item.source,
+                    "time": item.published_at.strftime("%H:%M IST"),
+                    "category": item.category,
+                }
+                for item in default_cues
+            ]
+
+        brief = self.gemini_brief
+        if not brief:
+            if high_risk:
+                brief = f"Sentinel Alert: {len(high_risk)} instruments flagged with macro/corporate volatility guards. Position sizes capped."
+            else:
+                brief = "Global and domestic overnight cues remain balanced. No severe regulatory, fraud, or earnings blackouts detected across NIFTY 50 universe."
+
+        return {
+            "updated_at_ist": now.isoformat(),
+            "gemini_brief": brief,
+            "headlines": headlines,
+            "high_risk_count": len(high_risk),
+            "high_risk_stocks": high_risk,
+        }
 
     def _merge_and_save_tags(
         self,

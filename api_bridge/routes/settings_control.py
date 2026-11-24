@@ -258,6 +258,49 @@ async def start_trading_engine(
     }
 
 
+@router.post("/control/engine/pause", dependencies=[Depends(verify_admin_api_key)])
+async def pause_trading_engine(
+    engine: TrillionaireEngine = Depends(get_engine),
+) -> Dict[str, Any]:
+    """
+    Safely pauses strategy entry signal evaluations and order placement,
+    while KiteTicker feed remains connected and streaming live ticks.
+    """
+    logger.info("[API CONTROL] Engine PAUSE requested via REST API")
+    res = engine.pause_trading()
+    from api_bridge.ws.telemetry_manager import telemetry_manager
+    try:
+        await telemetry_manager.broadcast_snapshot()
+    except Exception as e:
+        logger.debug(f"[API CONTROL] Snapshot broadcast error: {e}")
+    return {
+        **res,
+        "is_running": engine.is_running,
+        "timestamp_ist": datetime.now(IST_TZ).isoformat(),
+    }
+
+
+@router.post("/control/engine/resume", dependencies=[Depends(verify_admin_api_key)])
+async def resume_trading_engine(
+    engine: TrillionaireEngine = Depends(get_engine),
+) -> Dict[str, Any]:
+    """
+    Resumes strategy entry signal evaluations and order placement.
+    """
+    logger.info("[API CONTROL] Engine RESUME requested via REST API")
+    res = engine.resume_trading()
+    from api_bridge.ws.telemetry_manager import telemetry_manager
+    try:
+        await telemetry_manager.broadcast_snapshot()
+    except Exception as e:
+        logger.debug(f"[API CONTROL] Snapshot broadcast error: {e}")
+    return {
+        **res,
+        "is_running": engine.is_running,
+        "timestamp_ist": datetime.now(IST_TZ).isoformat(),
+    }
+
+
 @router.post("/control/engine/stop", dependencies=[Depends(verify_admin_api_key)])
 async def stop_trading_engine(
     engine: TrillionaireEngine = Depends(get_engine),

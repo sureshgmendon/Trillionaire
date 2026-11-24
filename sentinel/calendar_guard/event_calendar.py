@@ -129,6 +129,46 @@ class EventCalendar:
         return SentinelStatus.NORMAL, 1.0, "No scheduled event"
 
 
+# Indian NSE Equity Trading Holidays (2026 Schedule)
+NSE_HOLIDAYS_2026: Dict[str, str] = {
+    "2026-01-26": "Republic Day",
+    "2026-02-17": "Maha Shivratri",
+    "2026-03-03": "Holi",
+    "2026-03-20": "Id-Ul-Fitr (Ramzan Id)",
+    "2026-03-27": "Ram Navami",
+    "2026-03-31": "Mahavir Jayanti",
+    "2026-04-03": "Good Friday",
+    "2026-04-14": "Dr. Baba Saheb Ambedkar Jayanti",
+    "2026-05-01": "Maharashtra Day",
+    "2026-05-27": "Bakri Id / Eid ul-Adha",
+    "2026-06-26": "Muharram",
+    "2026-08-15": "Independence Day",
+    "2026-09-04": "Janmashtami",
+    "2026-10-02": "Mahatma Gandhi Jayanti",
+    "2026-10-20": "Dussehra",
+    "2026-11-09": "Diwali Laxmi Pujan (Muhurat Trading)",
+    "2026-11-10": "Diwali Balipratipada",
+    "2026-11-24": "Guru Nanak Jayanti",
+    "2026-12-25": "Christmas",
+}
+
+
+def get_market_holiday_name(date_ist: Optional[date] = None) -> Optional[str]:
+    """
+    Returns the holiday name if target date is an Indian NSE Equity trading holiday or weekend, else None.
+    """
+    if date_ist is None:
+        date_ist = datetime.now(IST_TZ).date()
+
+    # Check weekend first (Saturday / Sunday)
+    if date_ist.weekday() == 5:
+        return "Weekend (Saturday)"
+    if date_ist.weekday() == 6:
+        return "Weekend (Sunday)"
+
+    return NSE_HOLIDAYS_2026.get(date_ist.isoformat())
+
+
 # Singleton instance
 _default_calendar = EventCalendar()
 

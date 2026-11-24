@@ -84,6 +84,43 @@ class AsyncNewsFetcher:
             return self._mock_news
         return self._get_default_overnight_cues()
 
+    async def fetch_rss_headlines(self) -> List[NewsItem]:
+        """
+        Token-free news fetcher querying Google News RSS feed for Indian equity markets.
+        Parses XML items into NewsItem objects without incurring LLM token costs.
+        """
+        if self._mock_news is not None:
+            return self._mock_news
+
+        rss_url = "https://news.google.com/rss/search?q=NSE+stocks+OR+Nifty+50+when:1d&hl=en-IN&gl=IN&ceid=IN:en"
+        items: List[NewsItem] = []
+        try:
+            import xml.etree.ElementTree as ET
+            async with httpx.AsyncClient(timeout=4.0) as client:
+                resp = await client.get(rss_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+                if resp.status_code == 200:
+                    root = ET.fromstring(resp.content)
+                    for elem in root.findall(".//item")[:15]:
+                        title = elem.findtext("title", "").strip()
+                        source_elem = elem.find("source")
+                        source = source_elem.text if source_elem is not None else "Google News"
+                        if title:
+                            items.append(
+                                NewsItem(
+                                    headline=title,
+                                    summary=title,
+                                    source=source or "Financial Wire",
+                                    published_at=datetime.now(IST_TZ),
+                                    category="DOMESTIC_CORPORATE",
+                                )
+                            )
+        except Exception as e:
+            logger.debug(f"[RSS NEWS FETCHER] RSS fetch bypassed ({e}), using default overnight cues.")
+
+        if not items:
+            return self._get_default_overnight_cues()
+        return items
+
     def _get_default_overnight_cues(self) -> List[NewsItem]:
         """Returns baseline neutral overnight market summary."""
         now = datetime.now(IST_TZ)

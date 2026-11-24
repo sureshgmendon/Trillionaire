@@ -319,10 +319,41 @@ class KiteBroker:
         if self.kite is None:
             return {"status": "skipped", "reason": "No Kite client attached"}
 
+        # Quiet Pre-Login Reconciler: verify Redis key holds today's IST date before querying Kite API
+        try:
+            import redis
+            from config.settings import settings
+            from shared.constants import KEY_KITE_TOKEN, IST_TZ
+            r = redis.from_url(
+                settings.redis_url,
+                decode_responses=True,
+                socket_connect_timeout=0.2,
+                socket_timeout=0.2,
+            )
+            raw = r.get(KEY_KITE_TOKEN)
+            today_iso = datetime.now(IST_TZ).date().isoformat()
+            if raw:
+                tok_data = json.loads(raw)
+                if tok_data.get("date") != today_iso:
+                    logger.debug(f"[RECONCILER] Token date {tok_data.get('date')} != today {today_iso}. Skipping reconciliation.")
+                    return {"status": "skipped", "reason": "Token not authorized for today"}
+            else:
+                # If Redis is reachable but token is absent, check if real KiteConnect client
+                if type(self.kite).__name__ == "KiteConnect":
+                    logger.debug(f"[RECONCILER] No token in Redis key {KEY_KITE_TOKEN} for today. Skipping reconciliation.")
+                    return {"status": "skipped", "reason": "No token pushed for today"}
+        except Exception:
+            # Redis unavailable or bypassed in unit tests
+            pass
+
         try:
             broker_pos_data = self.kite.positions()
             net_positions = broker_pos_data.get("net", [])
         except Exception as e:
+            err_str = str(e)
+            if "Incorrect api_key or access_token" in err_str or "TokenException" in type(e).__name__:
+                logger.debug(f"[RECONCILER] Kite session not authorized yet: {e}")
+                return {"status": "skipped", "reason": "Token unauthorized"}
             logger.error(f"[RECONCILER] Error fetching broker positions: {e}")
             return {"status": "error", "error": str(e)}
 

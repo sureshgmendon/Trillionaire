@@ -11,6 +11,7 @@ Orchestrates the entire real-time quantitative algorithmic trading system:
 
 import asyncio
 from datetime import date, datetime
+import json
 from typing import TYPE_CHECKING, Any, Dict, Optional
 from loguru import logger
 
@@ -132,6 +133,7 @@ class TrillionaireEngine:
         self.is_running = False
         self.is_booted = False
         self.is_replaying = False
+        self.trading_paused = False
         self.current_trade_date: Optional[date] = None
 
         # Wire reactive signal routing on EventBus
@@ -193,10 +195,16 @@ class TrillionaireEngine:
         self.strategy_runner.load_profiles_from_disk()
         warmed = self.warmup_indicators()
 
+        # ---------------------------------------------------------------------
+        # Step 4: Rehydrate today's executed orders & realized PnL from Redis
+        # ---------------------------------------------------------------------
+        rehydration_res = self.rehydrate_from_redis(trade_date=self.current_trade_date)
+
         self.is_booted = True
         logger.info(
             f"Premarket boot sequence complete. Active monitored universe: {len(self.strategy_runner.profiles)} stocks, "
-            f"Sentinel tags: {len(sentinel_tags)}, Pre-warmed instruments: {len(warmed)}"
+            f"Sentinel tags: {len(sentinel_tags)}, Pre-warmed instruments: {len(warmed)}, "
+            f"Rehydrated orders: {rehydration_res['orders_rehydrated']}"
         )
 
         return {
@@ -229,6 +237,12 @@ class TrillionaireEngine:
         Queries Sentinel risk tag, sizes position dynamically, and submits marketable order.
         """
         if not self.is_running and not getattr(self, "is_replaying", False):
+            return
+
+        if self.trading_paused:
+            logger.info(
+                f"[ENGINE ROUTING] Signal {event.signal.signal_id} on {event.signal.tradingsymbol} dropped: Trading is PAUSED"
+            )
             return
 
         signal: Signal = event.signal
@@ -400,6 +414,240 @@ class TrillionaireEngine:
         )
         return flattened_orders
 
+    def pause_trading(self) -> Dict[str, Any]:
+        """Pauses new trade entry evaluation while keeping feed and ticker streaming."""
+        self.trading_paused = True
+        if hasattr(self.strategy_runner, "is_paused"):
+            self.strategy_runner.is_paused = True
+        logger.warning("[ENGINE CONTROL] Trading execution PAUSED. Feeder & Ticker remain streaming.")
+        return {"status": "paused", "trading_paused": True}
+
+    def resume_trading(self) -> Dict[str, Any]:
+        """Resumes strategy entry signal evaluation."""
+        self.trading_paused = False
+        if hasattr(self.strategy_runner, "is_paused"):
+            self.strategy_runner.is_paused = False
+        logger.info("[ENGINE CONTROL] Trading execution RESUMED.")
+        return {"status": "resumed", "trading_paused": False}
+
+    def rehydrate_from_redis(self, trade_date: Optional[date] = None) -> Dict[str, Any]:
+        """Rehydrates today's orders and realized PnL from Redis so trade history persists across restarts."""
+        target_date = trade_date or (self.current_trade_date or datetime.now(IST_TZ).date())
+        today_iso = target_date.isoformat()
+        orders_rehydrated = 0
+        pnl_rehydrated = 0.0
+        try:
+            import redis
+            from config.settings import settings
+            from shared.enums import OrderStatus, OrderType, Side
+            from shared.schemas import Order
+
+            r = redis.from_url(
+                settings.redis_url,
+                decode_responses=True,
+                socket_connect_timeout=0.2,
+                socket_timeout=0.2,
+            )
+            # 1. Rehydrate orders
+            order_key = f"trillionaire:orders:{today_iso}"
+            raw_orders = r.hgetall(order_key)
+            if raw_orders:
+                for oid, raw_json in raw_orders.items():
+                    data = json.loads(raw_json)
+                    created_at = (
+                        datetime.fromisoformat(data["created_at_ist"])
+                        if data.get("created_at_ist")
+                        else datetime.now(IST_TZ)
+                    )
+                    side_val = Side.BUY if data.get("side") == "BUY" else Side.SELL
+                    status_map = {
+                        "PENDING_NEW": OrderStatus.PENDING_NEW,
+                        "OPEN": OrderStatus.OPEN,
+                        "FILLED": OrderStatus.FILLED,
+                        "CANCELLED": OrderStatus.CANCELLED,
+                        "REJECTED": OrderStatus.REJECTED,
+                    }
+                    status_enum = status_map.get(data.get("status"), OrderStatus.FILLED)
+                    order = Order(
+                        order_id=data.get("order_id", oid),
+                        signal_id=data.get("signal_id"),
+                        tradingsymbol=data.get("tradingsymbol", ""),
+                        side=side_val,
+                        product=data.get("product", "MIS"),
+                        order_type=OrderType.LIMIT,
+                        quantity=int(data.get("quantity", 0)),
+                        limit_price=data.get("limit_price"),
+                        filled_quantity=int(data.get("filled_quantity", 0)),
+                        average_fill_price=data.get("average_fill_price"),
+                        status=status_enum,
+                        exit_reason=data.get("exit_reason"),
+                        created_at_ist=created_at,
+                        broker_order_id=data.get("broker_order_id"),
+                    )
+                    self.order_manager.orders[order.order_id] = order
+                    orders_rehydrated += 1
+
+            # 2. Rehydrate realized PnL
+            pnl_key = f"trillionaire:realized_pnl:{today_iso}"
+            raw_pnl = r.get(pnl_key)
+            if raw_pnl is not None:
+                pnl_rehydrated = float(raw_pnl)
+                self.risk_gatekeeper.realized_pnl = pnl_rehydrated
+                logger.info(f"[REHYDRATION] Restored realized PnL from Redis: Rs.{pnl_rehydrated:.2f}")
+
+            if orders_rehydrated > 0:
+                logger.info(f"[REHYDRATION] Rehydrated {orders_rehydrated} orders from Redis ({order_key})")
+        except Exception as e:
+            logger.debug(f"[REHYDRATION] Redis rehydration bypassed: {e}")
+
+        return {
+            "orders_rehydrated": orders_rehydrated,
+            "realized_pnl_rehydrated": pnl_rehydrated,
+        }
+
+    def get_lifecycle_milestones(self) -> Dict[str, Any]:
+        """
+        Computes structured readiness status for the 5 lifecycle milestones:
+        1. kite_auth: Kite Session Authorized
+        2. universe_warmed: Universe & Indicators Warmed
+        3. ticker_connected: Live Market Stream Connected
+        4. ticks_flowing: Live Ticks & Candles Flowing
+        5. strategy_armed: Strategy & Risk Execution Armed
+        """
+        from shared.constants import KEY_KITE_TOKEN
+        from sentinel.calendar_guard.event_calendar import get_market_holiday_name
+
+        now = datetime.now(IST_TZ)
+        today_date = now.date()
+        today_iso = today_date.isoformat()
+        holiday = get_market_holiday_name(today_date)
+
+        # 1. kite_auth
+        kite_auth_status = "waiting"
+        kite_auth_detail = "Waiting for daily Kite authentication token"
+        try:
+            import redis
+            from config.settings import settings
+            r = redis.from_url(settings.redis_url, decode_responses=True, socket_connect_timeout=0.2, socket_timeout=0.2)
+            raw = r.get(KEY_KITE_TOKEN)
+            if raw:
+                tok_data = json.loads(raw)
+                if tok_data.get("date") == today_iso:
+                    kite_auth_status = "passed"
+                    kite_auth_detail = f"Session authorized for {today_iso} (expires tomorrow 06:00 IST)"
+                else:
+                    kite_auth_status = "warning"
+                    kite_auth_detail = f"Token is for date {tok_data.get('date')}, today is {today_iso}"
+            else:
+                if getattr(self.broker, "kite", None) is not None:
+                    kite_auth_status = "passed"
+                    kite_auth_detail = "Mock/Internal Kite client authorized"
+                else:
+                    kite_auth_status = "warning"
+                    kite_auth_detail = "Click 'Login with Kite' in Settings to authenticate today's session"
+        except Exception:
+            if getattr(self.broker, "kite", None) is not None:
+                kite_auth_status = "passed"
+                kite_auth_detail = "Kite client attached"
+            else:
+                kite_auth_status = "warning"
+                kite_auth_detail = "Kite authentication pending"
+
+        # 2. universe_warmed
+        prof_count = len(self.strategy_runner.profiles)
+        is_warmed = prof_count > 0 and self.is_booted
+        if is_warmed:
+            universe_status = "passed"
+            universe_detail = f"{prof_count} profiles loaded, Sentinel tags synced, M5 indicators primed"
+        else:
+            universe_status = "waiting"
+            universe_detail = f"{prof_count} profiles active, indicator warmup pending premarket boot"
+
+        # 3. ticker_connected
+        ticker_obj = getattr(self.broker, "ticker", None)
+        is_conn = False
+        if ticker_obj is not None:
+            if hasattr(ticker_obj, "is_connected") and callable(ticker_obj.is_connected):
+                is_conn = ticker_obj.is_connected()
+            elif getattr(self.broker, "_is_running", False):
+                is_conn = True
+        elif getattr(self.broker, "_is_running", False):
+            is_conn = True
+
+        sub_count = len(getattr(self.broker, "tokens_to_subscribe", []))
+        if is_conn:
+            ticker_status = "passed"
+            ticker_detail = f"KiteTicker WebSocket active, subscribed to {sub_count} tokens"
+        else:
+            ticker_status = "waiting"
+            ticker_detail = "Ticker not connected. Starts automatically with Engine start"
+
+        # 4. ticks_flowing
+        recent_ticks_count = len(getattr(self.broker, "latest_ticks", {}))
+        if holiday:
+            ticks_status = "waiting"
+            ticks_detail = f"NSE Market Holiday ({holiday})"
+        elif now.hour < 9 or (now.hour == 9 and now.minute < 15):
+            ticks_status = "waiting"
+            ticks_detail = "Pre-Market (Opens 09:15 IST)"
+        elif recent_ticks_count > 0:
+            ticks_status = "passed"
+            ticks_detail = f"Streaming live L1 ticks ({recent_ticks_count} symbols active)"
+        elif is_conn:
+            ticks_status = "waiting"
+            ticks_detail = "Connected, awaiting market open ticks"
+        else:
+            ticks_status = "waiting"
+            ticks_detail = "Awaiting live market tick feed"
+
+        # 5. strategy_armed
+        is_kill = self.risk_gatekeeper.kill_switch_active
+        if is_kill:
+            strategy_status = "error"
+            strategy_detail = f"Circuit Breaker Tripped: {self.risk_gatekeeper.circuit_breaker_reason}"
+        elif self.trading_paused:
+            strategy_status = "warning"
+            strategy_detail = "Strategy scanning PAUSED by operator"
+        elif not self.is_running:
+            strategy_status = "waiting"
+            strategy_detail = "Engine stopped. Click 'Start Engine' to arm"
+        else:
+            strategy_status = "passed"
+            strategy_detail = "Armed: scanning breakouts (09:25–15:10 IST) with risk limits active"
+
+        milestones = [
+            {"id": "kite_auth", "label": "Kite Session Authorized", "status": kite_auth_status, "detail": kite_auth_detail},
+            {"id": "universe_warmed", "label": "Universe & Indicators Warmed", "status": universe_status, "detail": universe_detail},
+            {"id": "ticker_connected", "label": "Live Market Stream Connected", "status": ticker_status, "detail": ticker_detail},
+            {"id": "ticks_flowing", "label": "Live Ticks & Candles Flowing", "status": ticks_status, "detail": ticks_detail},
+            {"id": "strategy_armed", "label": "Strategy & Risk Execution Armed", "status": strategy_status, "detail": strategy_detail},
+        ]
+
+        passed_count = sum(1 for m in milestones if m["status"] == "passed")
+        total_count = len(milestones)
+
+        # Overall summary text for top bar pill
+        if holiday and passed_count >= 3:
+            summary_label = f"{passed_count}/{total_count} NSE HOLIDAY"
+        elif passed_count == total_count:
+            summary_label = f"{passed_count}/{total_count} READY"
+        elif kite_auth_status != "passed":
+            summary_label = f"{passed_count}/{total_count} AUTH NEEDED"
+        elif self.trading_paused:
+            summary_label = f"{passed_count}/{total_count} PAUSED"
+        else:
+            summary_label = f"{passed_count}/{total_count} ARMED"
+
+        return {
+            "summary_label": summary_label,
+            "passed_count": passed_count,
+            "total_count": total_count,
+            "milestones": milestones,
+            "holiday": holiday,
+            "trading_paused": self.trading_paused,
+            "timestamp_ist": now.isoformat(),
+        }
+
     def set_trading_mode(self, mode: TradingMode) -> None:
         """Updates trading mode dynamically."""
         self.trading_mode = mode
@@ -504,6 +752,7 @@ class TrillionaireEngine:
         return {
             "is_running": self.is_running,
             "is_booted": self.is_booted,
+            "trading_paused": self.trading_paused,
             "trading_mode": self.trading_mode.value,
             "data_feeder": self.data_feeder.value,
             "current_trade_date": self.current_trade_date.isoformat() if self.current_trade_date else None,
@@ -514,6 +763,7 @@ class TrillionaireEngine:
             "kill_switch_active": self.risk_gatekeeper.kill_switch_active,
             "profit_lock_armed": self.risk_gatekeeper.profit_lock_armed,
             "open_positions_count": len(self.order_manager.open_positions),
+            "milestones": self.get_lifecycle_milestones(),
             "funnel_metrics": getattr(self.strategy_runner, "funnel_metrics", {
                 "candles_evaluated": 0,
                 "passed_stock_rule": 0,

@@ -42,6 +42,7 @@ research_lab/data_store/*.parquet
 research_lab/data_store/*.duckdb
 research_lab/data_store/*.arrow
 !research_lab/data_store/.gitkeep
+research_lab/artifacts/nse_instruments_cache.json
 
 # Ensure Curated Stock Microstructure Profiles & Tearsheets ARE Tracked
 !research_lab/artifacts/stock_profiles.json

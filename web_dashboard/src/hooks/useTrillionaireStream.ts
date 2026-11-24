@@ -14,6 +14,7 @@ import {
   Order,
   Position,
   RiskAlert,
+  SentinelSummary,
   Signal,
   StockProfile,
   TelemetryEnvelope,
@@ -37,6 +38,7 @@ export function useTrillionaireStream() {
   const [anomalies, setAnomalies] = useState<AnomalyAlert[]>([]);
   const [riskAlerts, setRiskAlerts] = useState<RiskAlert[]>([]);
   const [profiles, setProfiles] = useState<StockProfile[]>([]);
+  const [sentinelSummary, setSentinelSummary] = useState<SentinelSummary | null>(null);
   const [selectedSymbol, setSelectedSymbol] = useState<string>("RELIANCE");
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -46,11 +48,12 @@ export function useTrillionaireStream() {
   // 1. Initial REST Hydration
   const fetchInitialState = useCallback(async () => {
     try {
-      const [statusRes, posRes, ordRes, sentinelRes] = await Promise.allSettled([
+      const [statusRes, posRes, ordRes, sentinelRes, summaryRes] = await Promise.allSettled([
         fetch(`${API_BASE_URL}/api/v1/status`),
         fetch(`${API_BASE_URL}/api/v1/positions`),
         fetch(`${API_BASE_URL}/api/v1/orders`),
         fetch(`${API_BASE_URL}/api/v1/sentinel`),
+        fetch(`${API_BASE_URL}/api/v1/sentinel/summary`),
       ]);
 
       if (statusRes.status === "fulfilled" && statusRes.value.ok) {
@@ -71,6 +74,10 @@ export function useTrillionaireStream() {
         if (profs.length > 0 && !selectedSymbol) {
           setSelectedSymbol(profs[0].tradingsymbol);
         }
+      }
+      if (summaryRes.status === "fulfilled" && summaryRes.value.ok) {
+        const summ = await summaryRes.value.json();
+        setSentinelSummary(summ);
       }
     } catch (err) {
       console.warn("[TELEMETRY REST] Initial fetch error:", err);
@@ -279,6 +286,40 @@ export function useTrillionaireStream() {
     }
   }, [fetchInitialState]);
 
+  const pauseTrading = useCallback(async () => {
+    try {
+      const resp = await fetch(`${API_BASE_URL}/api/v1/control/engine/pause`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-API-Key": ADMIN_KEY,
+        },
+      });
+      if (resp.ok) {
+        await fetchInitialState();
+      }
+    } catch (e) {
+      console.error("Failed to pause trading:", e);
+    }
+  }, [fetchInitialState]);
+
+  const resumeTrading = useCallback(async () => {
+    try {
+      const resp = await fetch(`${API_BASE_URL}/api/v1/control/engine/resume`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-API-Key": ADMIN_KEY,
+        },
+      });
+      if (resp.ok) {
+        await fetchInitialState();
+      }
+    } catch (e) {
+      console.error("Failed to resume trading:", e);
+    }
+  }, [fetchInitialState]);
+
   const stopEngine = useCallback(async () => {
     try {
       const resp = await fetch(`${API_BASE_URL}/api/v1/control/engine/stop`, {
@@ -380,6 +421,7 @@ export function useTrillionaireStream() {
     anomalies,
     riskAlerts,
     profiles,
+    sentinelSummary,
     selectedSymbol,
     setSelectedSymbol,
     liveUnrealizedPnl,
@@ -388,6 +430,8 @@ export function useTrillionaireStream() {
     triggerReplay,
     startEngine,
     stopEngine,
+    pauseTrading,
+    resumeTrading,
     refreshState: fetchInitialState,
   };
 }

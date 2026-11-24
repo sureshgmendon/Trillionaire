@@ -403,9 +403,13 @@ async def test_reconciler_adopts_orphaned_position_and_fixes_mismatch():
 async def test_trillionaire_engine_lifecycle_paper_mode():
     """Verifies end-to-end boot, signal routing, and stop lifecycle in PAPER mode."""
     bus = EventBus()
+    mock_auth = MagicMock(spec=KiteAuthManager)
+    mock_auth.get_valid_access_token.return_value = "mock_access_token_12345"
+    mock_auth.get_kite_client.return_value = MagicMock()
     engine = TrillionaireEngine(
         trading_mode=TradingMode.PAPER,
         event_bus=bus,
+        auth_manager=mock_auth,
     )
 
     # 1. Premarket Boot

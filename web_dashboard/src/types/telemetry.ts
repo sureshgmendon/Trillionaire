@@ -141,11 +141,50 @@ export interface FunnelMetrics {
   signals_emitted: number;
 }
 
+export interface PipelineMilestoneItem {
+  id: string;
+  label: string;
+  status: "passed" | "waiting" | "warning" | "error";
+  detail: string;
+}
+
+export interface PipelineMilestones {
+  summary_label: string;
+  passed_count: number;
+  total_count: number;
+  milestones: PipelineMilestoneItem[];
+  holiday?: string | null;
+  trading_paused: boolean;
+  timestamp_ist: string;
+}
+
+export interface SentinelHeadline {
+  title: string;
+  summary: string;
+  source: string;
+  time: string;
+  category: string;
+}
+
+export interface SentinelSummary {
+  updated_at_ist: string;
+  gemini_brief: string;
+  headlines: SentinelHeadline[];
+  high_risk_count: number;
+  high_risk_stocks: {
+    symbol: string;
+    status: string;
+    risk_multiplier: number;
+    reason: string;
+  }[];
+}
+
 export interface EngineStatus {
   mode: TradingMode;
   data_feeder?: DataFeederType;
   is_running: boolean;
   is_booted: boolean;
+  trading_paused?: boolean;
   capital_tier: string;
   allocated_capital: number;
   daily_mtm: number;
@@ -155,6 +194,7 @@ export interface EngineStatus {
   profit_floor_armed: boolean;
   open_positions_count: number;
   active_stocks_count: number;
+  milestones?: PipelineMilestones;
   funnel_metrics?: FunnelMetrics;
   timestamp_ist: string;
 }

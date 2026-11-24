@@ -119,12 +119,33 @@ class PreMarketNewsClassifier:
         for s in sector_data.get("stocks", []):
             self.sector_to_stocks.setdefault(s["parent_index"], []).append(s["tradingsymbol"])
 
-    async def classify_news(self, news_items: List[NewsItem]) -> Dict[str, NewsSentinelTag]:
+    HIGH_SEVERITY_PATTERNS = [
+        re.compile(p, re.IGNORECASE) for p in [
+            r"\bsebi\b", r"\braid[s]?\b", r"\bfraud\b", r"\bdefault\b",
+            r"\bban\b", r"\bmerger\b", r"\bearnings\b", r"\bresults\b",
+            r"\brbi\b", r"\bdowngrade\b", r"\bcrash\b"
+        ]
+    ]
+
+    async def classify_news(
+        self,
+        news_items: List[NewsItem],
+        is_premarket: bool = True,
+    ) -> Dict[str, NewsSentinelTag]:
         """
-        Classifies news items for all 25 stocks.
-        Attempts Gemini LLM API if key is set; falls back seamlessly to deterministic rules.
+        Classifies news items for all 25 universe stocks.
+        Zero-token efficiency gate: only invokes Gemini during premarket triage (08:30) or
+        when high-severity keywords match ('SEBI', 'raid', 'fraud', 'default', 'ban', 'merger',
+        'earnings', 'results', 'RBI', 'downgrade', 'crash'). Otherwise executes deterministic regex.
         """
-        if settings.gemini_api_key:
+        has_severe_headline = any(
+            any(pat.search(f"{item.headline} {item.summary}") for pat in self.HIGH_SEVERITY_PATTERNS)
+            for item in news_items
+        )
+
+        should_call_gemini = bool(settings.gemini_api_key) and (is_premarket or has_severe_headline)
+
+        if should_call_gemini:
             try:
                 return await self._classify_via_gemini(news_items)
             except Exception as e:

@@ -4,8 +4,8 @@
 
 .DESCRIPTION
     Registers a Windows Scheduled Task named "TrillionaireKiteAutoLogin" that executes
-    scripts\daily_kite_autologin.py every weekday (Monday through Friday) at 08:45 AM IST.
-    This logs in from your local residential broadband IP and pushes the fresh access_token
+    scripts\browser_kite_autologin.py every weekday (Monday through Friday) at 08:45 AM IST.
+    This logs in via headless browser from your local residential broadband IP and pushes the fresh access_token
     to the AWS EC2 Trillionaire Engine before pre-market opens at 09:00 AM.
 
 .PARAMETER Action
@@ -26,8 +26,8 @@ param (
 
 $TaskName = "TrillionaireKiteAutoLogin"
 $RepoRoot = (Resolve-Path "$PSScriptRoot\..").Path
-$ScriptPath = Join-Path $RepoRoot "scripts\daily_kite_autologin.py"
-$LogPath = Join-Path $RepoRoot "logs\autologin.log"
+$ScriptPath = Join-Path $RepoRoot "scripts\browser_kite_autologin.py"
+$LogPath = Join-Path $RepoRoot "logs\browser_autologin.log"
 
 # Ensure logs directory exists
 $LogDir = Join-Path $RepoRoot "logs"
@@ -97,11 +97,11 @@ Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction Silent
 # Trigger: Monday through Friday at 08:45 AM
 $Trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday -At 08:45AM
 
-# Action: python.exe scripts\daily_kite_autologin.py
+# Action: python.exe scripts\browser_kite_autologin.py with -WorkingDirectory $RepoRoot
 $Argument = "`"$ScriptPath`""
 $TaskAction = New-ScheduledTaskAction -Execute $PythonExe -Argument $Argument -WorkingDirectory $RepoRoot
 
-# Settings: wake to run, allow start on battery, run as soon as possible if missed
+# Settings: wake to run, allow start on battery, run as soon as possible if missed, don't stop if going on battery
 $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -WakeToRun -StartWhenAvailable
 
 # Register task under current user

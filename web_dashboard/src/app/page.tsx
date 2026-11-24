@@ -7,6 +7,7 @@ import { WatchlistAndSentinelMatrix } from "@/components/WatchlistAndSentinelMat
 import { PositionsAndOrdersTabs } from "@/components/PositionsAndOrdersTabs";
 import { ReplayControlModal } from "@/components/ReplayControlModal";
 import { SettingsControlModal } from "@/components/SettingsControlModal";
+import { NewsMarquee } from "@/components/NewsMarquee";
 import { useTrillionaireStream } from "@/hooks/useTrillionaireStream";
 
 export default function CockpitPage() {
@@ -21,6 +22,7 @@ export default function CockpitPage() {
     anomalies,
     riskAlerts,
     profiles,
+    sentinelSummary,
     selectedSymbol,
     setSelectedSymbol,
     exitPosition,
@@ -28,11 +30,14 @@ export default function CockpitPage() {
     triggerReplay,
     startEngine,
     stopEngine,
+    pauseTrading,
+    resumeTrading,
     refreshState,
   } = useTrillionaireStream();
 
   const [isReplayModalOpen, setIsReplayModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<"execution" | "broker" | "alerts">("execution");
 
   const selectedProfile = profiles.find((p) => p.tradingsymbol === selectedSymbol);
   const selectedCandles = candles[selectedSymbol] || [];
@@ -48,13 +53,23 @@ export default function CockpitPage() {
         positions={positions}
         onEmergencyFlatten={triggerEmergencyFlatten}
         onOpenReplayModal={() => setIsReplayModalOpen(true)}
-        onOpenSettingsModal={() => setIsSettingsModalOpen(true)}
+        onOpenSettingsModal={(tab) => {
+          if (tab && (tab === "execution" || tab === "broker" || tab === "alerts")) {
+            setSettingsTab(tab);
+          }
+          setIsSettingsModalOpen(true);
+        }}
         onStartEngine={startEngine}
         onStopEngine={stopEngine}
+        onPauseTrading={pauseTrading}
+        onResumeTrading={resumeTrading}
         onRefresh={refreshState}
       />
 
-      {/* 2. Main High-Density Cockpit Grid */}
+      {/* 2. Scrolling Token-Free News Marquee */}
+      <NewsMarquee headlines={sentinelSummary?.headlines} />
+
+      {/* 3. Main High-Density Cockpit Grid */}
       <main className="flex-1 p-3 grid grid-cols-1 xl:grid-cols-12 gap-3 overflow-hidden">
         {/* Left Column (4 cols): Watchlist & Sentinel Matrix */}
         <div className="xl:col-span-4 h-[calc(100vh-5.5rem)] min-h-[500px]">
@@ -106,6 +121,9 @@ export default function CockpitPage() {
         isOpen={isSettingsModalOpen}
         onClose={() => setIsSettingsModalOpen(false)}
         onSettingsSaved={refreshState}
+        initialTab={settingsTab}
+        milestones={status?.milestones}
+        sentinelSummary={sentinelSummary}
       />
     </div>
   );

@@ -4,6 +4,7 @@ import React, { useState, useEffect } from "react";
 import {
   AlertTriangle,
   CheckCircle,
+  Clock,
   ExternalLink,
   Key,
   Lock,
@@ -17,18 +18,31 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { DataFeederType, RuntimeSettings, TradingMode, UpdateSettingsPayload } from "@/types/telemetry";
+import {
+  DataFeederType,
+  PipelineMilestones,
+  RuntimeSettings,
+  SentinelSummary,
+  TradingMode,
+  UpdateSettingsPayload,
+} from "@/types/telemetry";
 
 interface SettingsControlModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSettingsSaved?: () => void;
+  initialTab?: "execution" | "broker" | "alerts";
+  milestones?: PipelineMilestones | null;
+  sentinelSummary?: SentinelSummary | null;
 }
 
 export const SettingsControlModal: React.FC<SettingsControlModalProps> = ({
   isOpen,
   onClose,
   onSettingsSaved,
+  initialTab,
+  milestones,
+  sentinelSummary,
 }) => {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -48,11 +62,17 @@ export const SettingsControlModal: React.FC<SettingsControlModalProps> = ({
   const [telegramBotToken, setTelegramBotToken] = useState("");
   const [telegramChatId, setTelegramChatId] = useState("");
 
-  const [activeTab, setActiveTab] = useState<"execution" | "broker" | "alerts">("execution");
+  const [activeTab, setActiveTab] = useState<"execution" | "broker" | "alerts">(initialTab || "execution");
   const [confirmLiveMode, setConfirmLiveMode] = useState(false);
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
   const adminKey = "trillionaire-local-admin-123";
+
+  useEffect(() => {
+    if (initialTab) {
+      setActiveTab(initialTab);
+    }
+  }, [initialTab, isOpen]);
 
   // Fetch current runtime settings on modal open
   useEffect(() => {
@@ -518,6 +538,61 @@ export const SettingsControlModal: React.FC<SettingsControlModalProps> = ({
                       className="w-full bg-cockpit-surface border border-cockpit-border rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-cockpit-blue transition"
                     />
                   </div>
+
+                  {/* Engine Pipeline Readiness (5 Milestones) Card */}
+                  <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-4 space-y-3 mt-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-2">
+                        <Shield className="h-4 w-4 text-cyan-400" />
+                        <span className="text-xs font-bold text-white uppercase tracking-wider">
+                          Engine Pipeline Readiness (5 Milestones)
+                        </span>
+                      </div>
+                      {milestones && (
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-500/10 border border-cyan-500/40 text-cyan-400 font-bold">
+                          {milestones.summary_label}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      {milestones?.milestones?.map((m) => (
+                        <div
+                          key={m.id}
+                          className="flex items-start justify-between p-2.5 rounded-lg bg-slate-900/60 border border-slate-800/80"
+                        >
+                          <div className="flex items-start space-x-2.5">
+                            {m.status === "passed" ? (
+                              <CheckCircle className="h-4 w-4 text-emerald-400 flex-shrink-0 mt-0.5" />
+                            ) : m.status === "error" ? (
+                              <AlertTriangle className="h-4 w-4 text-rose-400 flex-shrink-0 mt-0.5" />
+                            ) : m.status === "warning" ? (
+                              <AlertTriangle className="h-4 w-4 text-amber-400 flex-shrink-0 mt-0.5" />
+                            ) : (
+                              <Clock className="h-4 w-4 text-slate-400 flex-shrink-0 mt-0.5" />
+                            )}
+                            <div>
+                              <div className="text-xs font-semibold text-slate-200">{m.label}</div>
+                              <div className="text-[11px] text-slate-400 mt-0.5">{m.detail}</div>
+                            </div>
+                          </div>
+                          <span
+                            className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded uppercase flex-shrink-0 ml-2 ${
+                              m.status === "passed"
+                                ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40"
+                                : m.status === "error"
+                                ? "bg-rose-500/20 text-rose-400 border border-rose-500/40"
+                                : m.status === "warning"
+                                ? "bg-amber-500/20 text-amber-400 border border-amber-500/40"
+                                : "bg-slate-700/40 text-slate-400 border border-slate-600/40"
+                            }`}
+                          >
+                            {m.status}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               )}
 
@@ -577,6 +652,46 @@ export const SettingsControlModal: React.FC<SettingsControlModalProps> = ({
                       />
                     </div>
                   </div>
+
+                  {/* Gemini Sentinel Brief & Overnight Market Cues Card */}
+                  {sentinelSummary && (
+                    <div className="bg-slate-950/80 border border-purple-500/30 rounded-xl p-4 space-y-3 mt-4">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center space-x-2">
+                          <Zap className="h-4 w-4 text-purple-400" />
+                          <span className="text-xs font-bold text-white uppercase tracking-wider">
+                            Gemini Sentinel Brief & Overnight Market Cues
+                          </span>
+                        </div>
+                        <span className="text-[10px] font-mono text-purple-400">
+                          {sentinelSummary.high_risk_count} Flagged Stocks
+                        </span>
+                      </div>
+                      <div className="p-3 rounded-lg bg-purple-950/20 border border-purple-500/20 text-xs text-slate-200 leading-relaxed font-sans">
+                        {sentinelSummary.gemini_brief}
+                      </div>
+                      {sentinelSummary.headlines && sentinelSummary.headlines.length > 0 && (
+                        <div className="space-y-1.5 mt-2">
+                          <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wide">
+                            Recent Headlines ({sentinelSummary.headlines.length})
+                          </div>
+                          <div className="max-h-36 overflow-y-auto space-y-1 pr-1 font-mono text-[11px]">
+                            {sentinelSummary.headlines.map((h, i) => (
+                              <div
+                                key={i}
+                                className="flex items-center justify-between p-1.5 rounded bg-slate-900 border border-slate-800 text-slate-300"
+                              >
+                                <span className="truncate mr-2">• {h.title}</span>
+                                <span className="text-[10px] text-slate-500 flex-shrink-0">
+                                  {h.source} | {h.time}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
             </>

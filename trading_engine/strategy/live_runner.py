@@ -21,7 +21,7 @@ from research_lab.backtester.strategies import (
 )
 from sentinel.orchestrator import SentinelOrchestrator
 from shared.constants import IST_TZ
-from shared.enums import ClusterRegime, SentinelStatus, Timeframe
+from shared.enums import ClusterRegime, SentinelStatus, Side, Timeframe
 from shared.schemas import Candle, NewsSentinelTag, Signal, StockProfile, Tick
 from trading_engine.core.event_bus import (
     CandleCloseEvent,
@@ -87,11 +87,15 @@ class LiveStrategyRunner:
         # Generated signals history
         self.emitted_signals: List[Signal] = []
 
+        # Safe pause / resume state
+        self.is_paused: bool = False
+
         # Real-time funnel metrics for dashboard telemetry
         self.funnel_metrics: Dict[str, int] = {
             "candles_evaluated": 0,
             "passed_stock_rule": 0,
             "passed_sector_filter": 0,
+            "blocked_by_market_filter": 0,
             "signals_emitted": 0,
         }
 
@@ -185,6 +189,11 @@ class LiveStrategyRunner:
 
         # Micro-strategies strictly evaluate on M5 interval
         if tf != Timeframe.M5:
+            return None
+
+        # Check if trading strategy evaluation is paused
+        if self.is_paused:
+            logger.debug(f"[STRATEGY PAUSED] Skipping signal evaluation for {sym}")
             return None
 
         # Check if instrument is in tracked profiles
@@ -319,6 +328,25 @@ class LiveStrategyRunner:
         self._prev_candles[sym] = stock_bar
 
         if signal is not None:
+            # Gate 4: Broad Market (NIFTY 50) Trend Filter
+            nifty_candle = self._latest_candles.get(("NIFTY 50", Timeframe.M5))
+            if nifty_candle is not None and nifty_candle.vwap is not None and nifty_candle.vwap > 0:
+                nifty_ema_20 = self._index_ema_20.get("NIFTY 50", nifty_candle.vwap)
+                if signal.side == Side.BUY and (nifty_candle.close < nifty_candle.vwap or nifty_candle.close < nifty_ema_20):
+                    self.funnel_metrics["blocked_by_market_filter"] = self.funnel_metrics.get("blocked_by_market_filter", 0) + 1
+                    logger.info(
+                        f"[MARKET FILTER BLOCKED] BUY signal on {sym} blocked: NIFTY 50 below VWAP/EMA20 "
+                        f"(Close={nifty_candle.close:.2f}, VWAP={nifty_candle.vwap:.2f}, EMA20={nifty_ema_20:.2f})"
+                    )
+                    return None
+                elif signal.side == Side.SELL and (nifty_candle.close > nifty_candle.vwap or nifty_candle.close > nifty_ema_20):
+                    self.funnel_metrics["blocked_by_market_filter"] = self.funnel_metrics.get("blocked_by_market_filter", 0) + 1
+                    logger.info(
+                        f"[MARKET FILTER BLOCKED] SELL signal on {sym} blocked: NIFTY 50 above VWAP/EMA20 "
+                        f"(Close={nifty_candle.close:.2f}, VWAP={nifty_candle.vwap:.2f}, EMA20={nifty_ema_20:.2f})"
+                    )
+                    return None
+
             self.funnel_metrics["signals_emitted"] += 1
             if not passed_stock:
                 self.funnel_metrics["passed_stock_rule"] += 1
