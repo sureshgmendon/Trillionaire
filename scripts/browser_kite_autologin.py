@@ -43,7 +43,7 @@ try:
     user_id = env.get("KITE_USER_ID", "")
     password = env.get("KITE_PASSWORD", "")
     totp_secret = env.get("KITE_TOTP_SECRET", "")
-    server_url = env.get("TRILLIONAIRE_REMOTE_URL", "http://32.236.106.39").rstrip("/")
+    server_url = env.get("TRILLIONAIRE_REMOTE_URL", "https://trillionaire-trade.duckdns.org").rstrip("/")
     admin_key = env.get("TRILLIONAIRE_ADMIN_KEY", "trillionaire-local-admin-123")
 
     if not all([api_key, api_secret, user_id, password, totp_secret]):

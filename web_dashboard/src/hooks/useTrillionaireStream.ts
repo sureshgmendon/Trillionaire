@@ -21,8 +21,42 @@ import {
   Tick,
 } from "@/types/telemetry";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://32.236.106.39";
-const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://32.236.106.39/ws/stream";
+export function getApiBaseUrl(): string {
+  const envUrl = process.env.NEXT_PUBLIC_API_URL;
+  if (typeof window !== "undefined") {
+    // If browser cockpit is loaded over HTTPS, prevent mixed content blocking
+    if (window.location.protocol === "https:") {
+      if (!envUrl || envUrl.startsWith("http://32.236.106.39") || envUrl.startsWith("http://")) {
+        return window.location.origin;
+      }
+    }
+    if (envUrl && envUrl.trim() !== "") {
+      return envUrl;
+    }
+    return window.location.origin;
+  }
+  return envUrl && envUrl.trim() !== "" ? envUrl : "https://trillionaire-trade.duckdns.org";
+}
+
+export function getWsBaseUrl(): string {
+  const envWs = process.env.NEXT_PUBLIC_WS_URL;
+  if (typeof window !== "undefined") {
+    const isHttps = window.location.protocol === "https:";
+    const wsProto = isHttps ? "wss:" : "ws:";
+    // If browser cockpit is loaded over HTTPS, enforce secure WSS WebSocket stream
+    if (isHttps) {
+      if (!envWs || envWs.startsWith("ws://32.236.106.39") || envWs.startsWith("ws://")) {
+        return `wss://${window.location.host}/ws/stream`;
+      }
+    }
+    if (envWs && envWs.trim() !== "") {
+      return envWs;
+    }
+    return `${wsProto}//${window.location.host}/ws/stream`;
+  }
+  return envWs && envWs.trim() !== "" ? envWs : "wss://trillionaire-trade.duckdns.org/ws/stream";
+}
+
 const ADMIN_KEY = process.env.NEXT_PUBLIC_ADMIN_KEY || "trillionaire-local-admin-123";
 
 export type ConnectionStatus = "CONNECTED" | "RECONNECTING" | "OFFLINE";
@@ -48,14 +82,15 @@ export function useTrillionaireStream() {
   // 1. Initial REST Hydration
   const fetchInitialState = useCallback(async () => {
     try {
+      const apiBase = getApiBaseUrl();
       const [statusRes, posRes, ordRes, sentinelRes, summaryRes] = await Promise.allSettled([
-        fetch(`${API_BASE_URL}/api/v1/status`),
-        fetch(`${API_BASE_URL}/api/v1/positions`),
-        fetch(`${API_BASE_URL}/api/v1/orders`),
-        fetch(`${API_BASE_URL}/api/v1/sentinel`),
-        fetch(`${API_BASE_URL}/api/v1/sentinel/summary`, {
+        fetch(`${apiBase}/api/v1/status`),
+        fetch(`${apiBase}/api/v1/positions`),
+        fetch(`${apiBase}/api/v1/orders`),
+        fetch(`${apiBase}/api/v1/sentinel`),
+        fetch(`${apiBase}/api/v1/sentinel/summary`, {
           headers: {
-            "X-API-Key": process.env.NEXT_PUBLIC_ADMIN_KEY || "trillionaire-local-admin-123",
+            "X-API-Key": ADMIN_KEY,
           },
         }),
       ]);
@@ -96,13 +131,14 @@ export function useTrillionaireStream() {
 
     try {
       setConnectionStatus((prev) => (prev === "CONNECTED" ? "RECONNECTING" : "OFFLINE"));
-      const ws = new WebSocket(WS_BASE_URL);
+      const wsUrl = getWsBaseUrl();
+      const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
       ws.onopen = () => {
         setConnectionStatus("CONNECTED");
         reconnectAttemptsRef.current = 0;
-        console.info("[TELEMETRY WS] Stream connected to:", WS_BASE_URL);
+        console.info("[TELEMETRY WS] Stream connected to:", wsUrl);
       };
 
       ws.onmessage = (event) => {
@@ -184,11 +220,11 @@ export function useTrillionaireStream() {
           return [ord, ...prev.slice(0, 99)];
         });
         // Refetch positions and status on order fill or update
-        fetch(`${API_BASE_URL}/api/v1/positions`)
+        fetch(`${getApiBaseUrl()}/api/v1/positions`)
           .then((r) => r.json())
           .then((p) => setPositions(p))
           .catch(() => {});
-        fetch(`${API_BASE_URL}/api/v1/status`)
+        fetch(`${getApiBaseUrl()}/api/v1/status`)
           .then((r) => r.json())
           .then((s) => {
             if (s) setStatus(s);
@@ -215,7 +251,7 @@ export function useTrillionaireStream() {
   const triggerEmergencyFlatten = useCallback(async (reason: string = "UI_MANUAL_OVERRIDE") => {
     try {
       const resp = await fetch(
-        `${API_BASE_URL}/api/v1/control/kill-switch?reason=${encodeURIComponent(reason)}`,
+        `${getApiBaseUrl()}/api/v1/control/kill-switch?reason=${encodeURIComponent(reason)}`,
         {
           method: "POST",
           headers: {
@@ -243,7 +279,7 @@ export function useTrillionaireStream() {
   const triggerReplay = useCallback(
     async (params: { trading_date?: string; speed?: string; symbols?: string[] }) => {
       try {
-        const resp = await fetch(`${API_BASE_URL}/api/v1/control/replay`, {
+        const resp = await fetch(`${getApiBaseUrl()}/api/v1/control/replay`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -275,7 +311,7 @@ export function useTrillionaireStream() {
   // 6. Engine Lifecycle Actions (Start & Stop)
   const startEngine = useCallback(async () => {
     try {
-      const resp = await fetch(`${API_BASE_URL}/api/v1/control/engine/start`, {
+      const resp = await fetch(`${getApiBaseUrl()}/api/v1/control/engine/start`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -292,7 +328,7 @@ export function useTrillionaireStream() {
 
   const pauseTrading = useCallback(async () => {
     try {
-      const resp = await fetch(`${API_BASE_URL}/api/v1/control/engine/pause`, {
+      const resp = await fetch(`${getApiBaseUrl()}/api/v1/control/engine/pause`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -309,7 +345,7 @@ export function useTrillionaireStream() {
 
   const resumeTrading = useCallback(async () => {
     try {
-      const resp = await fetch(`${API_BASE_URL}/api/v1/control/engine/resume`, {
+      const resp = await fetch(`${getApiBaseUrl()}/api/v1/control/engine/resume`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -326,7 +362,7 @@ export function useTrillionaireStream() {
 
   const stopEngine = useCallback(async () => {
     try {
-      const resp = await fetch(`${API_BASE_URL}/api/v1/control/engine/stop`, {
+      const resp = await fetch(`${getApiBaseUrl()}/api/v1/control/engine/stop`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -343,9 +379,9 @@ export function useTrillionaireStream() {
 
   const refreshSentinelSummary = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE_URL}/api/v1/sentinel/summary`, {
+      const res = await fetch(`${getApiBaseUrl()}/api/v1/sentinel/summary`, {
         headers: {
-          "X-API-Key": process.env.NEXT_PUBLIC_ADMIN_KEY || "trillionaire-local-admin-123",
+          "X-API-Key": ADMIN_KEY,
         },
       });
       if (res.ok) {
@@ -382,7 +418,7 @@ export function useTrillionaireStream() {
     async (symbol: string, reason: string = "UI_MANUAL_EXIT") => {
       try {
         const resp = await fetch(
-          `${API_BASE_URL}/api/v1/control/positions/${encodeURIComponent(symbol)}/exit?reason=${encodeURIComponent(reason)}`,
+          `${getApiBaseUrl()}/api/v1/control/positions/${encodeURIComponent(symbol)}/exit?reason=${encodeURIComponent(reason)}`,
           {
             method: "POST",
             headers: {
@@ -392,9 +428,10 @@ export function useTrillionaireStream() {
           }
         );
         if (resp.ok) {
+          const apiBase = getApiBaseUrl();
           const [pRes, sRes] = await Promise.allSettled([
-            fetch(`${API_BASE_URL}/api/v1/positions`),
-            fetch(`${API_BASE_URL}/api/v1/status`),
+            fetch(`${apiBase}/api/v1/positions`),
+            fetch(`${apiBase}/api/v1/status`),
           ]);
           if (pRes.status === "fulfilled" && pRes.value.ok) {
             setPositions(await pRes.value.json());

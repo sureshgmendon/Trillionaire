@@ -26,6 +26,7 @@ import {
   TradingMode,
   UpdateSettingsPayload,
 } from "@/types/telemetry";
+import { getApiBaseUrl } from "@/hooks/useTrillionaireStream";
 
 interface SettingsControlModalProps {
   isOpen: boolean;
@@ -65,8 +66,8 @@ export const SettingsControlModal: React.FC<SettingsControlModalProps> = ({
   const [activeTab, setActiveTab] = useState<"execution" | "broker" | "alerts">(initialTab || "execution");
   const [confirmLiveMode, setConfirmLiveMode] = useState(false);
 
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-  const adminKey = "trillionaire-local-admin-123";
+  const apiUrl = getApiBaseUrl();
+  const adminKey = process.env.NEXT_PUBLIC_ADMIN_KEY || "trillionaire-local-admin-123";
 
   useEffect(() => {
     if (initialTab) {

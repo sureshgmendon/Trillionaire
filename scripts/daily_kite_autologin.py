@@ -183,7 +183,7 @@ def main():
         args.server_url
         or env_vars.get("AWS_SERVER_URL")
         or env_vars.get("TRILLIONAIRE_SERVER_URL")
-        or "http://32.236.106.39"
+        or "https://trillionaire-trade.duckdns.org"
     )
 
     admin_key = (

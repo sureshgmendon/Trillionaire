@@ -24,8 +24,8 @@ ENV NODE_ENV=production
 ARG NEXT_PUBLIC_API_URL
 ARG NEXT_PUBLIC_WS_URL
 ARG NEXT_PUBLIC_ADMIN_KEY
-ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
-ENV NEXT_PUBLIC_WS_URL=${NEXT_PUBLIC_WS_URL:-ws://localhost:8000/ws/stream}
+ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-https://trillionaire-trade.duckdns.org}
+ENV NEXT_PUBLIC_WS_URL=${NEXT_PUBLIC_WS_URL:-wss://trillionaire-trade.duckdns.org/ws/stream}
 ENV NEXT_PUBLIC_ADMIN_KEY=${NEXT_PUBLIC_ADMIN_KEY:-trillionaire_super_secret_local_key}
 
 RUN npm run build
