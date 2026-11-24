@@ -50,3 +50,9 @@ body {
 .animate-pulse-live {
   animation: pulse-subtle 2s infinite ease-in-out;
 }
+
+/* Calm institutional marquee glide */
+@keyframes marquee-glide {
+  0% { transform: translateX(0%); }
+  100% { transform: translateX(-50%); }
+}

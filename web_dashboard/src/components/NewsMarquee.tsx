@@ -23,6 +23,8 @@ export const NewsMarquee: React.FC<NewsMarqueeProps> = ({ headlines = [] }) => {
           },
         ];
 
+  const durationSeconds = Math.max(160, displayHeadlines.length * 8);
+
   const renderHeadlineItem = (item: SentinelHeadline, key: string) => {
     return (
       <div key={key} className="inline-flex items-center space-x-2 shrink-0">
@@ -65,7 +67,10 @@ export const NewsMarquee: React.FC<NewsMarqueeProps> = ({ headlines = [] }) => {
 
       {/* Scrolling Track: 2 Identical side-by-side flex tracks for seamless infinite loop */}
       <div className="flex-1 overflow-hidden relative">
-        <div className="flex w-max shrink-0 animate-marquee hover:[animation-play-state:paused]">
+        <div
+          className="flex w-max shrink-0 animate-marquee hover:[animation-play-state:paused]"
+          style={{ animationDuration: `${durationSeconds}s` }}
+        >
           {/* Primary Track */}
           <div className="flex shrink-0 items-center space-x-6 pr-6">
             {displayHeadlines.map((item, idx) =>
