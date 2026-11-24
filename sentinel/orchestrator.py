@@ -43,6 +43,7 @@ class SentinelOrchestrator:
         self.enable_redis = enable_redis
         self._cached_tags: Dict[str, NewsSentinelTag] = {}
         self.latest_headlines: List[Dict[str, Any]] = []
+        self._last_news_fetch_ist: Optional[datetime] = None
         self.gemini_brief: str = ""
         # Try loading existing manifest if available
         self.load_latest_manifest()
@@ -71,9 +72,11 @@ class SentinelOrchestrator:
                 "source": item.source,
                 "time": item.published_at.strftime("%H:%M IST"),
                 "category": item.category,
+                "url": getattr(item, "url", ""),
             }
             for item in news_items
         ]
+        self._last_news_fetch_ist = now_dt
 
         # 2. Rule-based classification
         news_results = self.classifier.classify_rule_based(news_items)
@@ -103,9 +106,11 @@ class SentinelOrchestrator:
                 "source": item.source,
                 "time": item.published_at.strftime("%H:%M IST"),
                 "category": item.category,
+                "url": getattr(item, "url", ""),
             }
             for item in news_items
         ]
+        self._last_news_fetch_ist = now_dt
 
         news_results = await self.classifier.classify_news(news_items, is_premarket=True)
 
@@ -125,11 +130,31 @@ class SentinelOrchestrator:
                 "source": item.source,
                 "time": item.published_at.strftime("%H:%M IST"),
                 "category": item.category,
+                "url": getattr(item, "url", ""),
             }
             for item in items
         ]
+        self._last_news_fetch_ist = now_dt
         news_results = await self.classifier.classify_news(items, is_premarket=False)
         self._merge_and_save_tags(news_results, now_dt.date(), now_dt)
+        return self.get_sentinel_summary()
+
+    async def get_sentinel_summary_async(self) -> Dict[str, Any]:
+        """
+        Returns structured sentinel summary, refreshing RSS headlines asynchronously
+        if headlines are empty or older than 15 minutes.
+        """
+        now = datetime.now(IST_TZ)
+        needs_refresh = (
+            not self.latest_headlines
+            or self._last_news_fetch_ist is None
+            or (now - self._last_news_fetch_ist).total_seconds() > 900
+        )
+        if needs_refresh:
+            try:
+                await self.refresh_intraday_news()
+            except Exception as e:
+                logger.warning(f"Error during async sentinel news refresh: {e}")
         return self.get_sentinel_summary()
 
     def get_sentinel_summary(self) -> Dict[str, Any]:
@@ -155,6 +180,7 @@ class SentinelOrchestrator:
                     "source": item.source,
                     "time": item.published_at.strftime("%H:%M IST"),
                     "category": item.category,
+                    "url": getattr(item, "url", ""),
                 }
                 for item in default_cues
             ]

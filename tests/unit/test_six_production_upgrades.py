@@ -309,5 +309,28 @@ def test_api_endpoints():
     # 4. Sentinel Summary
     s_res = client.get("/api/v1/sentinel/summary")
     assert s_res.status_code == 200
-    assert "headlines" in s_res.json()
-    assert "gemini_brief" in s_res.json()
+    data = s_res.json()
+    assert "headlines" in data
+    assert "gemini_brief" in data
+    assert len(data["headlines"]) > 0
+    # Every headline must have a valid url field
+    for h in data["headlines"]:
+        assert "url" in h
+
+
+@pytest.mark.asyncio
+async def test_fetch_rss_headlines_with_urls_and_holiday_notice():
+    """Verifies that fetch_rss_headlines returns articles with urls and prepends holiday notice on holidays."""
+    fetcher = AsyncNewsFetcher()
+    items = await fetcher.fetch_rss_headlines()
+    assert len(items) >= 1
+    # Check that URLs are non-empty strings starting with http
+    for item in items:
+        assert item.url != ""
+        assert item.url.startswith("http")
+
+    # If today is Guru Nanak Jayanti (2026-11-24), first item is the market notice
+    if get_market_holiday_name(datetime.now(IST_TZ).date()) == "Guru Nanak Jayanti":
+        assert items[0].category == "MARKET_NOTICE"
+        assert "Guru Nanak Jayanti" in items[0].headline
+        assert items[0].url == "https://www.nseindia.com/resources/exchange-communication-holidays"

@@ -143,7 +143,7 @@ async def get_engine_milestones(engine: TrillionaireEngine = Depends(get_engine)
 @router.get("/sentinel/summary")
 async def get_sentinel_summary(engine: TrillionaireEngine = Depends(get_engine)) -> Dict[str, Any]:
     """Returns latest financial news headlines, Gemini brief, and tagged high-risk stocks."""
-    return engine.sentinel.get_sentinel_summary()
+    return await engine.sentinel.get_sentinel_summary_async()
 
 
 @router.get("/positions")

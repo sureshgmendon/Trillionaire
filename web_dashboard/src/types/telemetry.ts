@@ -164,6 +164,7 @@ export interface SentinelHeadline {
   source: string;
   time: string;
   category: string;
+  url?: string;
 }
 
 export interface SentinelSummary {
