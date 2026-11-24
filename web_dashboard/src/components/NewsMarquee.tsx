@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { Radio, ExternalLink, AlertTriangle } from "lucide-react";
+import { Radio, ExternalLink } from "lucide-react";
 import { SentinelHeadline } from "@/types/telemetry";
 
 interface NewsMarqueeProps {
@@ -24,60 +24,28 @@ export const NewsMarquee: React.FC<NewsMarqueeProps> = ({ headlines = [] }) => {
         ];
 
   const renderHeadlineItem = (item: SentinelHeadline, key: string) => {
-    const isNotice =
-      item.category === "MARKET_NOTICE" ||
-      /NSE MARKET NOTICE|MARKETS CLOSED/i.test(item.title);
-    const isSevere =
-      !isNotice &&
-      /sebi|raid|fraud|default|ban|merger|earnings|results|rbi|downgrade|crash|plunge/i.test(
-        item.title
-      );
-
     return (
       <div key={key} className="inline-flex items-center space-x-2 shrink-0">
-        {/* Source Badge */}
-        <span
-          className={`text-[10px] px-1.5 py-0.5 rounded font-semibold tracking-tight inline-flex items-center space-x-1 ${
-            isNotice
-              ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
-              : isSevere
-              ? "bg-rose-500/20 text-rose-400 border border-rose-500/40"
-              : "bg-slate-800 text-slate-400 border border-slate-700/60"
-          }`}
-        >
-          {isNotice && <AlertTriangle className="h-2.5 w-2.5 text-amber-400 mr-0.5" />}
+        {/* Source Badge: Subtle dark terminal pill */}
+        <span className="text-[10px] px-1.5 py-0.5 rounded font-medium tracking-tight inline-flex items-center space-x-1 bg-slate-800/80 text-slate-400 border border-slate-700/60">
           <span>{item.source}</span>
-          <span className="opacity-50">•</span>
+          <span className="opacity-40">•</span>
           <span>{item.time}</span>
         </span>
 
-        {/* Headline Link / Text */}
+        {/* Headline Link / Text: Crisp text-slate-300 with cyan-300 hover */}
         {item.url ? (
           <a
             href={item.url}
             target="_blank"
             rel="noopener noreferrer"
-            className={`group inline-flex items-center space-x-1.5 transition underline-offset-2 hover:underline ${
-              isNotice
-                ? "text-amber-200 font-semibold hover:text-amber-100 decoration-amber-400"
-                : isSevere
-                ? "text-rose-200 hover:text-white decoration-rose-400"
-                : "text-slate-300 hover:text-white decoration-cyan-400/70"
-            }`}
+            className="group inline-flex items-center space-x-1.5 transition text-slate-300 hover:text-cyan-300 underline-offset-2 hover:underline decoration-cyan-400/50"
           >
             <span>{item.title}</span>
             <ExternalLink className="h-3 w-3 text-slate-500 group-hover:text-cyan-400 opacity-60 group-hover:opacity-100 transition-opacity shrink-0 inline-block ml-0.5" />
           </a>
         ) : (
-          <span
-            className={`transition cursor-default ${
-              isNotice
-                ? "text-amber-200 font-semibold"
-                : isSevere
-                ? "text-rose-200"
-                : "text-slate-300 hover:text-white"
-            }`}
-          >
+          <span className="text-slate-300 hover:text-cyan-300 transition cursor-default">
             {item.title}
           </span>
         )}

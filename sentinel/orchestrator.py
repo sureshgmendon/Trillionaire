@@ -72,7 +72,7 @@ class SentinelOrchestrator:
                 "source": item.source,
                 "time": item.published_at.strftime("%H:%M IST"),
                 "category": item.category,
-                "url": getattr(item, "url", ""),
+                "url": getattr(item, "url", None),
             }
             for item in news_items
         ]
@@ -106,7 +106,7 @@ class SentinelOrchestrator:
                 "source": item.source,
                 "time": item.published_at.strftime("%H:%M IST"),
                 "category": item.category,
-                "url": getattr(item, "url", ""),
+                "url": getattr(item, "url", None),
             }
             for item in news_items
         ]
@@ -130,7 +130,7 @@ class SentinelOrchestrator:
                 "source": item.source,
                 "time": item.published_at.strftime("%H:%M IST"),
                 "category": item.category,
-                "url": getattr(item, "url", ""),
+                "url": getattr(item, "url", None),
             }
             for item in items
         ]
@@ -146,7 +146,7 @@ class SentinelOrchestrator:
         """
         now = datetime.now(IST_TZ)
         needs_refresh = (
-            not self.latest_headlines
+            len(self.latest_headlines) <= 1
             or self._last_news_fetch_ist is None
             or (now - self._last_news_fetch_ist).total_seconds() > 900
         )
@@ -180,7 +180,7 @@ class SentinelOrchestrator:
                     "source": item.source,
                     "time": item.published_at.strftime("%H:%M IST"),
                     "category": item.category,
-                    "url": getattr(item, "url", ""),
+                    "url": getattr(item, "url", None),
                 }
                 for item in default_cues
             ]

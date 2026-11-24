@@ -23,7 +23,7 @@ import {
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://32.236.106.39";
 const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://32.236.106.39/ws/stream";
-const ADMIN_KEY = "trillionaire-local-admin-123";
+const ADMIN_KEY = process.env.NEXT_PUBLIC_ADMIN_KEY || "trillionaire-local-admin-123";
 
 export type ConnectionStatus = "CONNECTED" | "RECONNECTING" | "OFFLINE";
 
@@ -53,7 +53,11 @@ export function useTrillionaireStream() {
         fetch(`${API_BASE_URL}/api/v1/positions`),
         fetch(`${API_BASE_URL}/api/v1/orders`),
         fetch(`${API_BASE_URL}/api/v1/sentinel`),
-        fetch(`${API_BASE_URL}/api/v1/sentinel/summary`),
+        fetch(`${API_BASE_URL}/api/v1/sentinel/summary`, {
+          headers: {
+            "X-API-Key": process.env.NEXT_PUBLIC_ADMIN_KEY || "trillionaire-local-admin-123",
+          },
+        }),
       ]);
 
       if (statusRes.status === "fulfilled" && statusRes.value.ok) {
@@ -337,11 +341,33 @@ export function useTrillionaireStream() {
     }
   }, [fetchInitialState]);
 
+  const refreshSentinelSummary = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/v1/sentinel/summary`, {
+        headers: {
+          "X-API-Key": process.env.NEXT_PUBLIC_ADMIN_KEY || "trillionaire-local-admin-123",
+        },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSentinelSummary(data);
+      }
+    } catch (e) {
+      console.warn("[TELEMETRY REST] Sentinel summary refresh error:", e);
+    }
+  }, []);
+
   useEffect(() => {
     fetchInitialState();
     connectWebSocket();
 
+    // Refresh Sentinel Summary (Economic Times RSS) every 5 minutes in background
+    const sentinelInterval = setInterval(() => {
+      refreshSentinelSummary();
+    }, 5 * 60 * 1000);
+
     return () => {
+      clearInterval(sentinelInterval);
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
       }
@@ -349,7 +375,7 @@ export function useTrillionaireStream() {
         wsRef.current.close();
       }
     };
-  }, [fetchInitialState, connectWebSocket]);
+  }, [fetchInitialState, connectWebSocket, refreshSentinelSummary]);
 
   // 7. Single Position Quick Exit Action
   const exitPosition = useCallback(
@@ -433,5 +459,6 @@ export function useTrillionaireStream() {
     pauseTrading,
     resumeTrading,
     refreshState: fetchInitialState,
+    refreshSentinelSummary,
   };
 }
