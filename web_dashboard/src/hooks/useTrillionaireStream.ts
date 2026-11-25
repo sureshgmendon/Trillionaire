@@ -560,17 +560,18 @@ export function useTrillionaireStream() {
     }
   }, []);
 
-  // 8. Dynamic Live Unrealized P&L Calculation across active positions
+  // 8. Single Shared P&L Calculations (synchronized 1:1 between TopTelemetryBar & P&L Report)
   const liveUnrealizedPnl = (function calculateLiveUnrealized() {
     if (!positions || positions.length === 0) {
       return 0.0;
     }
     let total = 0;
     for (const pos of positions) {
+      const qty = pos.quantity ?? 0;
+      if (Math.abs(qty) === 0) continue;
       const sym = (pos as any).symbol || pos.tradingsymbol;
       const avgPrice = (pos as any).avg_price ?? pos.average_entry_price ?? 0;
       const currentLtp = (sym && ticks[sym]?.ltp) ?? pos.ltp ?? avgPrice;
-      const qty = pos.quantity ?? 0;
       const isBuy = (pos.side as any) === "BUY" || qty > 0;
 
       if (isBuy) {
@@ -581,6 +582,19 @@ export function useTrillionaireStream() {
     }
     return Math.round(total * 100) / 100;
   })();
+
+  const liveRealizedPnl = (function calculateLiveRealized() {
+    if (closedTrades && closedTrades.length > 0) {
+      const sum = closedTrades.reduce(
+        (acc, t) => acc + ((t as any).net_pnl ?? (t as any).pnl ?? t.realized_pnl ?? 0),
+        0
+      );
+      return Math.round(sum * 100) / 100;
+    }
+    return Math.round((status?.realized_pnl ?? 0) * 100) / 100;
+  })();
+
+  const liveDailyMtm = Math.round((liveRealizedPnl + liveUnrealizedPnl) * 100) / 100;
 
   return {
     connectionStatus,
@@ -600,6 +614,8 @@ export function useTrillionaireStream() {
     selectedTimeframe,
     setSelectedTimeframe,
     liveUnrealizedPnl,
+    liveRealizedPnl,
+    liveDailyMtm,
     exitPosition,
     cancelOrder,
     triggerEmergencyFlatten,

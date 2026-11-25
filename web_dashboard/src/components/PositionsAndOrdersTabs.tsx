@@ -24,6 +24,9 @@ export interface PositionsAndOrdersTabsProps {
   orders: Order[];
   closedTrades?: ClosedTrade[];
   ticks?: Record<string, Tick>;
+  liveRealizedPnl?: number;
+  liveUnrealizedPnl?: number;
+  liveDailyMtm?: number;
   onExitPosition?: (symbol: string) => Promise<{ success: boolean; message?: string }>;
   onCancelOrder?: (orderId: string) => Promise<{ success: boolean; message?: string }>;
   signals?: Signal[];
@@ -83,6 +86,9 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
   orders = [],
   closedTrades = [],
   ticks = {},
+  liveRealizedPnl: propRealizedPnl,
+  liveUnrealizedPnl: propUnrealizedPnl,
+  liveDailyMtm: propDailyMtm,
   onExitPosition,
   onCancelOrder,
 }) => {
@@ -207,15 +213,16 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
 
     // 1. Live running open positions (Qty != 0) updated dynamically on every tick
     for (const pos of positions) {
-      if (!pos.quantity) continue;
-      const sym = pos.tradingsymbol;
-      const isBuy = pos.side === "BUY";
-      const netQty = isBuy ? pos.quantity : -pos.quantity;
-      const avg = pos.average_entry_price || 0;
-      const liveLtp = ticks[sym]?.ltp ?? pos.ltp ?? avg;
+      const rawQty = pos.quantity ?? 0;
+      if (Math.abs(rawQty) === 0) continue;
+      const sym = (pos as any).symbol || pos.tradingsymbol;
+      const isBuy = (pos.side as any) === "BUY" || rawQty > 0;
+      const netQty = isBuy ? Math.abs(rawQty) : -Math.abs(rawQty);
+      const avg = (pos as any).avg_price ?? pos.average_entry_price ?? 0;
+      const liveLtp = (sym && ticks[sym]?.ltp) ?? pos.ltp ?? avg;
       const unrealized = isBuy
-        ? (liveLtp - avg) * Math.abs(pos.quantity)
-        : (avg - liveLtp) * Math.abs(pos.quantity);
+        ? (liveLtp - avg) * Math.abs(rawQty)
+        : (avg - liveLtp) * Math.abs(rawQty);
       const chgPct =
         avg > 0 ? ((liveLtp - avg) / avg) * 100 * (isBuy ? 1 : -1) : 0;
 
@@ -242,6 +249,7 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
       .sort((a, b) => new Date(b.exit_time).getTime() - new Date(a.exit_time).getTime());
 
     for (const ct of sortedClosed) {
+      const closedPnl = (ct as any).net_pnl ?? (ct as any).pnl ?? ct.realized_pnl ?? 0;
       rows.push({
         key: `closed-${ct.order_id}-${ct.exit_time}`,
         product: ct.product || "MIS",
@@ -250,7 +258,7 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
         qty: 0,
         avg: Math.round(ct.entry_price * 100) / 100,
         ltp: Math.round(ct.actual_exit_price * 100) / 100,
-        pnl: Math.round(ct.realized_pnl * 100) / 100,
+        pnl: Math.round(closedPnl * 100) / 100,
         chgPct: Math.round(ct.pnl_pct * 100) / 100,
         isOpen: false,
         slPrice: ct.sl_price,
@@ -274,12 +282,41 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
     );
   }, [reportItems, reportSearch]);
 
+  const totalReportRealized = useMemo(() => {
+    if (!reportSearch.trim() && propRealizedPnl !== undefined) {
+      return propRealizedPnl;
+    }
+    return (
+      Math.round(
+        filteredReportItems
+          .filter((i) => !i.isOpen)
+          .reduce((acc, item) => acc + item.pnl, 0) * 100
+      ) / 100
+    );
+  }, [filteredReportItems, reportSearch, propRealizedPnl]);
+
+  const totalReportUnrealized = useMemo(() => {
+    if (!reportSearch.trim() && propUnrealizedPnl !== undefined) {
+      return propUnrealizedPnl;
+    }
+    return (
+      Math.round(
+        filteredReportItems
+          .filter((i) => i.isOpen)
+          .reduce((acc, item) => acc + item.pnl, 0) * 100
+      ) / 100
+    );
+  }, [filteredReportItems, reportSearch, propUnrealizedPnl]);
+
   const totalReportPnl = useMemo(() => {
+    if (!reportSearch.trim() && propDailyMtm !== undefined) {
+      return propDailyMtm;
+    }
     return (
       Math.round(filteredReportItems.reduce((acc, item) => acc + item.pnl, 0) * 100) /
       100
     );
-  }, [filteredReportItems]);
+  }, [filteredReportItems, reportSearch, propDailyMtm]);
 
   const maxAbsPnl = useMemo(() => {
     if (reportItems.length === 0) return 1;
@@ -770,21 +807,51 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
                       );
                     })}
                   </tbody>
-                  <tfoot className="border-t-2 border-cockpit-border bg-cockpit-surface/80 font-bold">
+                  <tfoot className="sticky bottom-0 border-t-2 border-cockpit-border bg-cockpit-surface/95 backdrop-blur-sm font-bold">
                     <tr>
-                      <td colSpan={2} className="py-2.5 px-3 text-white uppercase text-xs">
-                        Total P&L ({filteredReportItems.length})
+                      <td colSpan={4} className="py-2.5 px-3">
+                        <div className="inline-flex items-center space-x-2 px-2 py-0.5 rounded bg-cockpit-card border border-cockpit-border text-[10px] font-mono font-medium text-cockpit-muted">
+                          <span>
+                            Realized:{" "}
+                            <span
+                              className={`tabular-nums font-semibold ${
+                                totalReportRealized >= 0 ? "text-emerald-400" : "text-rose-400"
+                              }`}
+                            >
+                              {totalReportRealized >= 0 ? "+" : "-"}₹
+                              {Math.abs(totalReportRealized).toLocaleString("en-IN", {
+                                minimumFractionDigits: 2,
+                                maximumFractionDigits: 2,
+                              })}
+                            </span>
+                          </span>
+                          <span className="opacity-40">|</span>
+                          <span>
+                            Unrealized:{" "}
+                            <span
+                              className={`tabular-nums font-semibold ${
+                                totalReportUnrealized >= 0 ? "text-emerald-400" : "text-rose-400"
+                              }`}
+                            >
+                              {totalReportUnrealized >= 0 ? "+" : "-"}₹
+                              {Math.abs(totalReportUnrealized).toLocaleString("en-IN", {
+                                minimumFractionDigits: 2,
+                                maximumFractionDigits: 2,
+                              })}
+                            </span>
+                          </span>
+                        </div>
                       </td>
-                      <td colSpan={3} className="py-2.5 px-2 text-right text-cockpit-muted text-[11px]">
-                        Net Realized + Unrealized
+                      <td className="py-2.5 px-2 text-right text-white uppercase text-xs font-bold tracking-wider">
+                        Total
                       </td>
                       <td
-                        className={`py-2.5 px-3 text-right text-sm tabular-nums font-bold ${
+                        className={`py-2.5 px-3 text-right text-sm font-mono tabular-nums font-bold ${
                           totalReportPnl >= 0 ? "text-emerald-400" : "text-rose-400"
                         }`}
                       >
-                        {totalReportPnl >= 0 ? "+" : ""}₹
-                        {totalReportPnl.toLocaleString("en-IN", {
+                        {totalReportPnl >= 0 ? "+" : "-"}₹
+                        {Math.abs(totalReportPnl).toLocaleString("en-IN", {
                           minimumFractionDigits: 2,
                           maximumFractionDigits: 2,
                         })}

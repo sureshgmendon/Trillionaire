@@ -27,6 +27,9 @@ interface TopTelemetryBarProps {
   ticks?: Record<string, Tick>;
   positions?: Position[];
   closedTrades?: ClosedTrade[];
+  liveUnrealizedPnl?: number;
+  liveRealizedPnl?: number;
+  liveDailyMtm?: number;
   onEmergencyFlatten: () => Promise<{ success: boolean; message: string }>;
   onOpenReplayModal: () => void;
   onOpenSettingsModal: (initialTab?: string) => void;
@@ -43,6 +46,9 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
   ticks = {},
   positions = [],
   closedTrades = [],
+  liveUnrealizedPnl: propUnrealizedPnl,
+  liveRealizedPnl: propRealizedPnl,
+  liveDailyMtm: propDailyMtm,
   onEmergencyFlatten,
   onOpenReplayModal,
   onOpenSettingsModal,
@@ -86,67 +92,41 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
     setTimeout(() => setFlattenToast(null), 5000);
   };
 
-  // 1. Live Unrealized P&L Calculation on Every Live Incoming Market TICK (1-second)
-  const liveUnrealizedPnl = React.useMemo(() => {
-    if (!positions || positions.length === 0) {
-      return 0.0;
-    }
+  // Shared live P&L telemetry bound directly to useTrillionaireStream (with standalone fallback)
+  const fallbackUnrealizedPnl = React.useMemo(() => {
+    if (!positions || positions.length === 0) return 0.0;
     let totalUnrealized = 0;
     for (const pos of positions) {
+      const qty = pos.quantity ?? 0;
+      if (Math.abs(qty) === 0) continue;
       const sym = (pos as any).symbol || pos.tradingsymbol;
       const avgPrice = (pos as any).avg_price ?? pos.average_entry_price ?? 0;
       const currentLtp = (sym && ticks[sym]?.ltp) ?? pos.ltp ?? avgPrice;
-      const qty = pos.quantity ?? 0;
       const isBuy = (pos.side as any) === "BUY" || qty > 0;
-
-      if (isBuy) {
-        totalUnrealized += (currentLtp - avgPrice) * Math.abs(qty);
-      } else {
-        totalUnrealized += (avgPrice - currentLtp) * Math.abs(qty);
-      }
+      totalUnrealized += isBuy
+        ? (currentLtp - avgPrice) * Math.abs(qty)
+        : (avgPrice - currentLtp) * Math.abs(qty);
     }
     return Math.round(totalUnrealized * 100) / 100;
   }, [ticks, positions]);
 
-  // 2. Live Realized P&L & Total MTM Sync (summed across closed_trades ledger)
-  const [liveRealizedPnl, setLiveRealizedPnl] = useState<number>(status?.realized_pnl ?? 0);
-
-  const closedTradesSum = React.useMemo(() => {
-    if (!closedTrades || closedTrades.length === 0) return null;
-    return Math.round(
-      closedTrades.reduce((acc, t) => acc + (t.realized_pnl || 0), 0) * 100
-    ) / 100;
-  }, [closedTrades]);
-
-  useEffect(() => {
-    if (closedTradesSum !== null) {
-      setLiveRealizedPnl(closedTradesSum);
-    } else if (status?.realized_pnl !== undefined && status?.realized_pnl !== null) {
-      setLiveRealizedPnl(status.realized_pnl);
+  const fallbackRealizedPnl = React.useMemo(() => {
+    if (closedTrades && closedTrades.length > 0) {
+      return (
+        Math.round(
+          closedTrades.reduce(
+            (acc, t) => acc + ((t as any).net_pnl ?? (t as any).pnl ?? t.realized_pnl ?? 0),
+            0
+          ) * 100
+        ) / 100
+      );
     }
-  }, [closedTradesSum, status?.realized_pnl]);
+    return Math.round((status?.realized_pnl ?? 0) * 100) / 100;
+  }, [closedTrades, status?.realized_pnl]);
 
-  // Poll GET /api/v1/status every 3000ms as reconciliation fallback
-  useEffect(() => {
-    const pollStatus = async () => {
-      try {
-        const res = await fetch("/api/v1/status");
-        if (res.ok) {
-          const data = await res.json();
-          if (data && typeof data.realized_pnl === "number") {
-            setLiveRealizedPnl(data.realized_pnl);
-          }
-        }
-      } catch {
-        // Silently catch fetch errors during offline/tests
-      }
-    };
-
-    const interval = setInterval(pollStatus, 3000);
-    return () => clearInterval(interval);
-  }, []);
-
-  const totalDailyMtm = Math.round((liveRealizedPnl + liveUnrealizedPnl) * 100) / 100;
+  const liveUnrealizedPnl = propUnrealizedPnl ?? fallbackUnrealizedPnl;
+  const liveRealizedPnl = propRealizedPnl ?? fallbackRealizedPnl;
+  const totalDailyMtm = propDailyMtm ?? Math.round((liveRealizedPnl + liveUnrealizedPnl) * 100) / 100;
   const allocatedCapital = status?.allocated_capital || 100000;
   const mtmPct = allocatedCapital > 0 ? (totalDailyMtm / allocatedCapital) * 100 : 0;
   const isProfit = totalDailyMtm >= 0;

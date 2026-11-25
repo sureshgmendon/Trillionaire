@@ -29,6 +29,9 @@ export default function CockpitPage() {
     setSelectedSymbol,
     selectedTimeframe,
     setSelectedTimeframe,
+    liveUnrealizedPnl,
+    liveRealizedPnl,
+    liveDailyMtm,
     exitPosition,
     cancelOrder,
     triggerEmergencyFlatten,
@@ -76,6 +79,9 @@ export default function CockpitPage() {
         ticks={ticks}
         positions={positions}
         closedTrades={closedTrades}
+        liveUnrealizedPnl={liveUnrealizedPnl}
+        liveRealizedPnl={liveRealizedPnl}
+        liveDailyMtm={liveDailyMtm}
         onEmergencyFlatten={triggerEmergencyFlatten}
         onOpenReplayModal={() => setIsReplayModalOpen(true)}
         onOpenSettingsModal={(tab) => {
@@ -131,6 +137,9 @@ export default function CockpitPage() {
               orders={orders}
               closedTrades={closedTrades}
               ticks={ticks}
+              liveRealizedPnl={liveRealizedPnl}
+              liveUnrealizedPnl={liveUnrealizedPnl}
+              liveDailyMtm={liveDailyMtm}
               onExitPosition={exitPosition}
               onCancelOrder={cancelOrder}
               signals={signals}
