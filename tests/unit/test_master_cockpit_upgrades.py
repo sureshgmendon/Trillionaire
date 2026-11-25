@@ -505,3 +505,80 @@ async def test_auth_kite_token_auto_reconnects_ticker_and_milestone(monkeypatch)
     await engine.broker.stop()
 
 
+@pytest.mark.asyncio
+async def test_closed_trade_preserves_initial_sl_after_breakeven():
+    """Verifies ClosedTrade.sl_price preserves original initial_sl_price even after +1R breakeven trail."""
+    bus = EventBus()
+    risk_guard = PortfolioRiskGatekeeper(event_bus=bus, allocated_capital=200000.0)
+    broker = PaperBroker(event_bus=bus)
+    om = OrderManager(event_bus=bus, broker=broker, risk_gatekeeper=risk_guard)
+
+    t0 = datetime(2026, 4, 15, 9, 40, 0, tzinfo=IST_TZ)
+    broker.set_latest_tick(
+        Tick(
+            instrument_token=738561,
+            tradingsymbol="RELIANCE",
+            timestamp_ist=t0,
+            ltp=2500.0,
+            volume=10000,
+            bid=2499.8,
+            ask=2500.2,
+        )
+    )
+    sig = Signal(
+        signal_id=str(uuid.uuid4()),
+        tradingsymbol="RELIANCE",
+        parent_index="NIFTY ENERGY",
+        side=Side.BUY,
+        entry_price=2500.0,
+        stop_loss=2480.0,
+        target_price=2540.0,
+        confidence=0.90,
+        strategy_name="DUAL_CONFIRMATION",
+        generated_at_ist=t0,
+    )
+    await om.submit_signal_order(sig, quantity=20)
+    pos = om.open_positions["RELIANCE"]
+    assert pos.initial_sl_price == 2480.0
+    assert pos.stop_loss == 2480.0
+
+    # Advance tick +1R (LTP >= 2520.0) -> triggers breakeven trail moving active pos.stop_loss to entry
+    t1 = datetime(2026, 4, 15, 9, 50, 0, tzinfo=IST_TZ)
+    await bus.publish(
+        TickEvent(
+            tick=Tick(
+                instrument_token=738561,
+                tradingsymbol="RELIANCE",
+                timestamp_ist=t1,
+                ltp=2525.0,
+                volume=15000,
+                bid=2524.8,
+                ask=2525.2,
+            )
+        )
+    )
+    assert pos.stop_loss == pytest.approx(pos.average_entry_price)
+    assert pos.initial_sl_price == 2480.0
+
+    # Exit at Target -> ClosedTrade.sl_price must still preserve 2480.0 (not 2500.5)
+    t2 = datetime(2026, 4, 15, 10, 5, 0, tzinfo=IST_TZ)
+    await bus.publish(
+        TickEvent(
+            tick=Tick(
+                instrument_token=738561,
+                tradingsymbol="RELIANCE",
+                timestamp_ist=t2,
+                ltp=2542.0,
+                volume=20000,
+                bid=2541.8,
+                ask=2542.2,
+            )
+        )
+    )
+    assert len(om.closed_trades) == 1
+    assert om.closed_trades[0].sl_price == 2480.0
+    assert om.closed_trades[0].target_price == 2540.0
+    assert om.closed_trades[0].exit_reason == "TARGET_HIT"
+
+
+

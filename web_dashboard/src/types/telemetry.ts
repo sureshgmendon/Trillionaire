@@ -125,6 +125,7 @@ export interface Position {
   unrealized_pnl: number;
   realized_pnl: number;
   stop_loss: number;
+  initial_sl_price?: number;
   target_price: number;
   entry_time?: string;
   entry_order_id?: string;

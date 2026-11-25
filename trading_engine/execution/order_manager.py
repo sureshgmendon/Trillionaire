@@ -586,6 +586,8 @@ class OrderManager:
             # 1. Entry order fill: Create Position (ignore exit orders when position already closed)
             if sym not in self.open_positions and not order.is_exit:
                 sl = order.sl_price or self._bracket_sl.get(sym, round(fill_price * 0.99, 2))
+                init_sl = order.sl_price or self._initial_sl.get(sym) or sl
+                self._initial_sl[sym] = init_sl
                 tp = order.target_price or self._bracket_tp.get(sym, round(fill_price * 1.02, 2))
                 entry_ts = order.created_at_ist or datetime.now(IST_TZ)
 
@@ -601,6 +603,7 @@ class OrderManager:
                     unrealized_pnl=0.0,
                     realized_pnl=0.0,
                     stop_loss=sl,
+                    initial_sl_price=init_sl,
                     target_price=tp,
                     entry_time=entry_ts,
                     entry_order_id=order.order_id,
@@ -664,7 +667,8 @@ class OrderManager:
                     exit_ts = datetime.now(IST_TZ)
                     entry_ts = pos.entry_time or self._entry_times.get(sym) or order.created_at_ist or exit_ts
 
-                    # Capture IMMUTABLE snapshot BEFORE deleting open position
+                    # Capture IMMUTABLE snapshot BEFORE deleting open position (preserving original initial_sl_price)
+                    original_sl = pos.initial_sl_price or self._initial_sl.get(sym) or pos.stop_loss
                     closed_record = ClosedTrade(
                         order_id=order.order_id,
                         symbol=sym,
@@ -672,7 +676,7 @@ class OrderManager:
                         side=pos.side,
                         filled_qty=filled_qty,
                         entry_price=round(pos.average_entry_price, 2),
-                        sl_price=round(pos.stop_loss, 2),
+                        sl_price=round(original_sl, 2),
                         target_price=round(pos.target_price, 2),
                         actual_exit_price=round(exit_price, 2),
                         realized_pnl=round(realized_pnl, 2),

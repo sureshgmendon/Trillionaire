@@ -193,6 +193,7 @@ class Position(StrictBaseModel):
     unrealized_pnl: float = Field(default=0.0, description="Current mark-to-market unrealized PnL in INR")
     realized_pnl: float = Field(default=0.0, description="Closed / realized PnL in INR")
     stop_loss: float = Field(..., gt=0, description="Active trailing or hard stop loss price")
+    initial_sl_price: Optional[float] = Field(default=None, gt=0, description="Original initial hard stop loss level prior to 1R breakeven advance")
     target_price: float = Field(..., gt=0, description="Active profit target price")
     entry_time: Optional[datetime] = Field(default=None, description="Entry execution timestamp in IST")
     entry_order_id: Optional[str] = Field(default=None, description="Entry order ID")
