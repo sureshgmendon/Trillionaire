@@ -581,4 +581,113 @@ async def test_closed_trade_preserves_initial_sl_after_breakeven():
     assert om.closed_trades[0].exit_reason == "TARGET_HIT"
 
 
+@pytest.mark.asyncio
+async def test_profit_pullback_does_not_flatten_when_profit_lock_disabled():
+    """
+    Verifies settings.enable_profit_lock defaults to False and profit pullbacks do NOT
+    trigger PROFIT_LOCK_FLOOR_REACHED / FLATTEN_ALL, while -1.5% loss kill-switch and 15:10 square-off remain active.
+    """
+    from shared.schemas import Position
+
+    assert settings.enable_profit_lock is False
+
+    bus = EventBus()
+    flatten_calls: list[str] = []
+
+    async def mock_flatten(reason: str):
+        flatten_calls.append(reason)
+
+    risk_guard = PortfolioRiskGatekeeper(
+        event_bus=bus,
+        allocated_capital=100000.0,
+        flatten_handler=mock_flatten,
+    )
+    assert risk_guard.enable_profit_lock is False
+
+    pos = Position(
+        tradingsymbol="TCS",
+        side=Side.BUY,
+        quantity=100,
+        average_entry_price=3000.0,
+        ltp=3000.0,
+        unrealized_pnl=0.0,
+        realized_pnl=0.0,
+        stop_loss=2940.0,
+        target_price=3100.0,
+    )
+    risk_guard.register_position(pos)
+
+    # Peak +1.3% (+Rs. 1,300) then pullback to +0.4% (+Rs. 400) must NOT flatten
+    await risk_guard.process_tick(
+        Tick(
+            instrument_token=2953217,
+            tradingsymbol="TCS",
+            timestamp_ist=datetime(2026, 4, 15, 11, 0, tzinfo=IST_TZ),
+            ltp=3013.0,
+            volume=50000,
+            bid=3012.9,
+            ask=3013.1,
+        )
+    )
+    await risk_guard.process_tick(
+        Tick(
+            instrument_token=2953217,
+            tradingsymbol="TCS",
+            timestamp_ist=datetime(2026, 4, 15, 11, 20, tzinfo=IST_TZ),
+            ltp=3004.0,
+            volume=70000,
+            bid=3003.9,
+            ask=3004.1,
+        )
+    )
+    assert risk_guard.profit_lock_armed is False
+    assert risk_guard.profit_lock_floor_hit is False
+    assert flatten_calls == []
+
+    # 15:10 IST mandatory square-off still remains active
+    await risk_guard.process_tick(
+        Tick(
+            instrument_token=2953217,
+            tradingsymbol="TCS",
+            timestamp_ist=datetime(2026, 4, 15, 15, 10, tzinfo=IST_TZ),
+            ltp=3004.0,
+            volume=90000,
+            bid=3003.9,
+            ask=3004.1,
+        )
+    )
+    assert flatten_calls == ["MANDATORY_1510_SQUARE_OFF"]
+
+    # Hard -1.5% max daily loss kill-switch also remains active
+    risk_guard.reset_daily_state(trade_date=date(2026, 4, 16))
+    flatten_calls.clear()
+    risk_guard.register_position(
+        Position(
+            tradingsymbol="TCS",
+            side=Side.BUY,
+            quantity=100,
+            average_entry_price=3000.0,
+            ltp=3000.0,
+            unrealized_pnl=0.0,
+            realized_pnl=0.0,
+            stop_loss=2940.0,
+            target_price=3100.0,
+        )
+    )
+    await risk_guard.process_tick(
+        Tick(
+            instrument_token=2953217,
+            tradingsymbol="TCS",
+            timestamp_ist=datetime(2026, 4, 16, 12, 0, tzinfo=IST_TZ),
+            ltp=2984.0,  # -Rs. 1,600 <= -Rs. 1,500 (-1.5%)
+            volume=95000,
+            bid=2983.9,
+            ask=2984.1,
+        )
+    )
+    assert risk_guard.kill_switch_active is True
+    assert flatten_calls == ["DAILY_LOSS_KILL_SWITCH_TRIPPED"]
+
+
+
 

@@ -41,9 +41,11 @@ class PortfolioRiskGatekeeper:
         max_open_positions: Optional[int] = None,
         max_mis_leverage: Optional[float] = None,
         flatten_handler: Optional[FlattenCallback] = None,
+        enable_profit_lock: Optional[bool] = None,
     ):
         self.bus = event_bus or bus
         self.flatten_handler = flatten_handler
+        self._explicit_enable_profit_lock = enable_profit_lock
 
         # Load tier configuration
         tier_config = self._load_tier_config(tier_name)
@@ -166,6 +168,17 @@ class PortfolioRiskGatekeeper:
     @realized_pnl.setter
     def realized_pnl(self, value: float) -> None:
         self.realized_daily_pnl = round(float(value), 2)
+
+    @property
+    def enable_profit_lock(self) -> bool:
+        """Whether intraday profit-lock trailing floor liquidation is enabled."""
+        if self._explicit_enable_profit_lock is not None:
+            return bool(self._explicit_enable_profit_lock)
+        return bool(getattr(settings, "enable_profit_lock", False))
+
+    @enable_profit_lock.setter
+    def enable_profit_lock(self, value: Optional[bool]) -> None:
+        self._explicit_enable_profit_lock = value
 
     def close_position(self, symbol: str, realized_pnl: float) -> Optional[Position]:
         """Removes an active position and updates realized daily PnL."""
@@ -322,39 +335,40 @@ class PortfolioRiskGatekeeper:
             await self._trigger_flatten("DAILY_LOSS_KILL_SWITCH_TRIPPED")
             return
 
-        # 3. Profit-Locking Trailing Floor (+1.2% trigger, +0.6% floor)
-        trigger_inr = self.allocated_capital * (self.profit_lock_trigger_pct / 100.0)
-        floor_inr = self.allocated_capital * (self.profit_lock_floor_pct / 100.0)
+        # 3. Profit-Locking Trailing Floor (+1.2% trigger, +0.6% floor) — opt-in only
+        if self.enable_profit_lock:
+            trigger_inr = self.allocated_capital * (self.profit_lock_trigger_pct / 100.0)
+            floor_inr = self.allocated_capital * (self.profit_lock_floor_pct / 100.0)
 
-        if not self.profit_lock_armed and total_daily_mtm >= trigger_inr:
-            self.profit_lock_armed = True
-            msg = f"Profit lock floor armed at +0.6% (MTM reached Rs.{total_daily_mtm:,.2f} >= Rs.{trigger_inr:,.2f})"
-            logger.info(f"[PROFIT LOCK] {msg}")
-            alert = RiskAlertEvent(
-                symbol="ALL",
-                level="INFO",
-                message=msg,
-                timestamp_ist=now_dt,
-            )
-            self.risk_alerts.append(alert)
-            await self.bus.publish(alert)
+            if not self.profit_lock_armed and total_daily_mtm >= trigger_inr:
+                self.profit_lock_armed = True
+                msg = f"Profit lock floor armed at +0.6% (MTM reached Rs.{total_daily_mtm:,.2f} >= Rs.{trigger_inr:,.2f})"
+                logger.info(f"[PROFIT LOCK] {msg}")
+                alert = RiskAlertEvent(
+                    symbol="ALL",
+                    level="INFO",
+                    message=msg,
+                    timestamp_ist=now_dt,
+                )
+                self.risk_alerts.append(alert)
+                await self.bus.publish(alert)
 
-        if self.profit_lock_armed and not self.profit_lock_floor_hit and total_daily_mtm <= floor_inr:
-            self.profit_lock_floor_hit = True
-            self.circuit_breaker_reason = (
-                f"Daily profit retraced to floor: MTM Rs.{total_daily_mtm:,.2f} <= +{self.profit_lock_floor_pct}% (Rs.{floor_inr:,.2f})"
-            )
-            logger.warning(f"[PROFIT LOCK FLOOR] {self.circuit_breaker_reason}")
-            alert = RiskAlertEvent(
-                symbol="ALL",
-                level="CIRCUIT_BREAKER",
-                message=self.circuit_breaker_reason,
-                timestamp_ist=now_dt,
-            )
-            self.risk_alerts.append(alert)
-            await self.bus.publish(alert)
-            await self._trigger_flatten("PROFIT_LOCK_FLOOR_REACHED")
-            return
+            if self.profit_lock_armed and not self.profit_lock_floor_hit and total_daily_mtm <= floor_inr:
+                self.profit_lock_floor_hit = True
+                self.circuit_breaker_reason = (
+                    f"Daily profit retraced to floor: MTM Rs.{total_daily_mtm:,.2f} <= +{self.profit_lock_floor_pct}% (Rs.{floor_inr:,.2f})"
+                )
+                logger.warning(f"[PROFIT LOCK FLOOR] {self.circuit_breaker_reason}")
+                alert = RiskAlertEvent(
+                    symbol="ALL",
+                    level="CIRCUIT_BREAKER",
+                    message=self.circuit_breaker_reason,
+                    timestamp_ist=now_dt,
+                )
+                self.risk_alerts.append(alert)
+                await self.bus.publish(alert)
+                await self._trigger_flatten("PROFIT_LOCK_FLOOR_REACHED")
+                return
 
         # 4. Mandatory 15:10 IST Auto-Square-Off
         t = now_dt.time()

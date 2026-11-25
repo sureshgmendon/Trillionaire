@@ -311,6 +311,7 @@ async def test_profit_lock_trailing_floor(test_bus: EventBus):
         profit_lock_trigger_pct=1.2,  # +Rs. 1,200 triggers arming
         profit_lock_floor_pct=0.6,    # +Rs. 600 floor liquidation
         flatten_handler=mock_flatten,
+        enable_profit_lock=True,
     )
 
     pos = Position(

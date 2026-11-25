@@ -66,10 +66,14 @@ class Settings(BaseSettings):
         description="Admin API Secret Key for Mutating /control/* Endpoints",
     )
 
-    # IST Algorithmic Session Boundaries
+    # IST Algorithmic Session Boundaries & Risk Switches
     no_entry_before: str = Field(default="09:25", description="Earliest time (IST HH:MM) for new entries")
     no_entry_after: str = Field(default="14:30", description="Latest time (IST HH:MM) for new entries")
     force_square_off: str = Field(default="15:10", description="Mandatory time (IST HH:MM) to square off all MIS")
+    enable_profit_lock: bool = Field(
+        default=False,
+        description="Enable intraday profit-locking trailing floor (+1.2% trigger / +0.6% floor)",
+    )
 
     # Logging & Observability
     log_level: str = Field(default="INFO", description="Loguru logging level")
