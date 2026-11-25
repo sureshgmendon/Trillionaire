@@ -30,6 +30,7 @@ export default function CockpitPage() {
     selectedTimeframe,
     setSelectedTimeframe,
     exitPosition,
+    cancelOrder,
     triggerEmergencyFlatten,
     overrideSentinelLock,
     triggerReplay,
@@ -131,6 +132,7 @@ export default function CockpitPage() {
               closedTrades={closedTrades}
               ticks={ticks}
               onExitPosition={exitPosition}
+              onCancelOrder={cancelOrder}
               signals={signals}
               anomalies={anomalies}
               riskAlerts={riskAlerts}

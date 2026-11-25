@@ -681,16 +681,22 @@ class TrillionaireEngine:
 
         # 3. ticker_connected
         ticker_obj = getattr(self.broker, "ticker", None)
-        is_conn = False
-        if ticker_obj is not None:
-            if hasattr(ticker_obj, "is_connected") and callable(ticker_obj.is_connected):
-                is_conn = ticker_obj.is_connected()
-            elif getattr(self.broker, "_is_running", False):
-                is_conn = True
-        elif getattr(self.broker, "_is_running", False):
-            is_conn = True
-
         sub_count = len(getattr(self.broker, "tokens_to_subscribe", []))
+        token_expired = bool(getattr(self.broker, "token_expired", False))
+        ticker_reconnecting = bool(getattr(self.broker, "ticker_reconnecting", False))
+        is_conn = False
+        if not token_expired:
+            if ticker_obj is not None and hasattr(ticker_obj, "is_connected") and callable(ticker_obj.is_connected):
+                try:
+                    is_conn = bool(ticker_obj.is_connected())
+                except Exception:
+                    is_conn = False
+            if not is_conn and getattr(self.broker, "ticker_connected", False):
+                is_conn = True
+            if not is_conn and getattr(self.broker, "_is_running", False) and not ticker_reconnecting:
+                if ticker_obj is None or sub_count > 0:
+                    is_conn = True
+
         if is_conn:
             ticker_status = "passed"
             ticker_detail = f"KiteTicker WebSocket active, subscribed to {sub_count} tokens"
@@ -873,6 +879,84 @@ class TrillionaireEngine:
             self.warmup_indicators()
         except Exception as e:
             logger.warning(f"[FEEDER SWITCH] Indicator warmup failed: {e}")
+
+    async def reconnect_kite_ticker(
+        self,
+        kite_client: Any,
+        access_token: Optional[str] = None,
+        resolved_tokens: Optional[list[int]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Cleanly tears down any stale KiteTicker connection and reconnects with a fresh daily access token
+        without calling engine.stop() (preserving any open intraday positions).
+        """
+        from config.settings import settings
+        from trading_engine.brokers.kite.kite_broker import KiteBroker
+
+        tokens = resolved_tokens if resolved_tokens is not None else self._resolve_subscribed_tokens()
+        tok = access_token or settings.kite_access_token or getattr(kite_client, "access_token", None)
+        api_key = settings.kite_api_key or (getattr(kite_client, "api_key", "") if kite_client else "")
+
+        if self.instrument_sync is not None and kite_client is not None:
+            self.instrument_sync.kite = kite_client
+
+        # Gracefully stop previous ticker/reconciler without flattening open positions
+        if hasattr(self.broker, "stop") and callable(self.broker.stop):
+            try:
+                await self.broker.stop()
+            except Exception as e:
+                logger.debug(f"[TICKER RECONNECT] Previous broker stop warning: {e}")
+
+        ticker_client = None
+        if api_key and tok and not str(api_key).startswith("your_"):
+            try:
+                from kiteconnect import KiteTicker
+
+                ticker_client = KiteTicker(
+                    api_key=api_key,
+                    access_token=tok,
+                    reconnect=True,
+                    reconnect_max_tries=50,
+                    reconnect_max_delay=60,
+                )
+            except Exception as e:
+                logger.warning(f"[TICKER RECONNECT] Could not instantiate KiteTicker: {e}")
+
+        if isinstance(self.broker, KiteBroker):
+            if hasattr(self.broker, "clear_token_expiry"):
+                self.broker.clear_token_expiry()
+            self.broker.trading_mode = self.trading_mode
+            self.broker.kite = kite_client
+            self.broker.tokens_to_subscribe = tokens
+            if ticker_client is not None:
+                self.broker.ticker = ticker_client
+                self.broker._setup_ticker_callbacks()
+        else:
+            self.broker = KiteBroker(
+                kite_client=kite_client,
+                ticker_client=ticker_client,
+                event_bus=self.bus,
+                instrument_sync=self.instrument_sync,
+                tokens_to_subscribe=tokens,
+                trading_mode=self.trading_mode,
+            )
+
+        if hasattr(self.broker, "set_order_manager") and callable(self.broker.set_order_manager):
+            self.broker.set_order_manager(self.order_manager)
+
+        started = False
+        if (self.is_running or ticker_client is not None) and hasattr(self.broker, "start"):
+            try:
+                await self.broker.start()
+                started = True
+            except Exception as e:
+                logger.warning(f"[TICKER RECONNECT] KiteBroker start warning: {e}")
+
+        return {
+            "reconnected": started,
+            "subscribed_tokens": len(tokens),
+            "engine_running": self.is_running,
+        }
 
     def get_status(self) -> Dict[str, Any]:
         """Returns comprehensive diagnostic and operational metrics snapshot."""

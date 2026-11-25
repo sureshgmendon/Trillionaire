@@ -26,7 +26,7 @@ ARG NEXT_PUBLIC_WS_URL
 ARG NEXT_PUBLIC_ADMIN_KEY
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-https://trillionaire-trade.duckdns.org}
 ENV NEXT_PUBLIC_WS_URL=${NEXT_PUBLIC_WS_URL:-wss://trillionaire-trade.duckdns.org/ws/stream}
-ENV NEXT_PUBLIC_ADMIN_KEY=${NEXT_PUBLIC_ADMIN_KEY:-trillionaire_super_secret_local_key}
+ENV NEXT_PUBLIC_ADMIN_KEY=${NEXT_PUBLIC_ADMIN_KEY:-trillionaire-local-admin-123}
 
 RUN npm run build
 

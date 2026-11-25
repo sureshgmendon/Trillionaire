@@ -324,6 +324,50 @@ async def exit_single_position(
     }
 
 
+@router.post("/control/orders/{order_id}/cancel", dependencies=[Depends(verify_admin_api_key)])
+async def cancel_pending_order(
+    order_id: str,
+    engine: TrillionaireEngine = Depends(get_engine),
+) -> Dict[str, Any]:
+    """
+    Cancels an active OPEN or TRIGGER PENDING order via attached broker and updates ledger state.
+    Requires X-API-Key header.
+    """
+    from shared.enums import OrderStatus
+
+    order = engine.order_manager.orders.get(order_id)
+    if order is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Order {order_id} not found",
+        )
+    if order.status not in (OrderStatus.OPEN, OrderStatus.TRIGGER_PENDING, OrderStatus.PENDING_NEW):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Order {order_id} cannot be cancelled in status {order.status.value}",
+        )
+
+    cancelled = await engine.order_manager.broker.cancel_order(order_id)
+    if cancelled is not None:
+        order = cancelled
+    order.status = OrderStatus.CANCELLED
+    engine.order_manager.orders[order_id] = order
+    engine.order_manager._persist_order_to_redis(order)
+    engine.order_manager._notify_state_change()
+
+    try:
+        await telemetry_manager.broadcast_snapshot()
+    except Exception:
+        pass
+
+    return {
+        "status": "cancelled",
+        "order_id": order_id,
+        "order": order.model_dump(mode="json"),
+        "timestamp_ist": datetime.now(IST_TZ).isoformat(),
+    }
+
+
 def _resolve_replay_symbols(symbols: Optional[List[str]]) -> List[str]:
     """Resolves target symbols defaulting to multi-sector basket with parent indices."""
     if not symbols:

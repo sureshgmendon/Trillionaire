@@ -421,3 +421,87 @@ async def test_reconcile_positions_skips_live_kite_in_paper_mode():
     assert "SBIN" in engine.order_manager.open_positions
     assert engine.order_manager.open_positions["SBIN"].quantity == 20
 
+
+def test_cancel_pending_order_endpoint():
+    """Verifies POST /api/v1/control/orders/{order_id}/cancel cancels an OPEN / TRIGGER PENDING order."""
+    bus = EventBus()
+    risk_guard = PortfolioRiskGatekeeper(event_bus=bus, allocated_capital=150000.0)
+    broker = PaperBroker(event_bus=bus)
+    om = OrderManager(event_bus=bus, broker=broker, risk_gatekeeper=risk_guard)
+    engine = TrillionaireEngine(
+        trading_mode=TradingMode.PAPER,
+        event_bus=bus,
+        risk_gatekeeper=risk_guard,
+        order_manager=om,
+        broker=broker,
+    )
+    pending_ord = Order(
+        order_id="pend-sl-1",
+        tradingsymbol="INFY",
+        side=Side.SELL,
+        product="MIS",
+        order_type=OrderType.SL_LIMIT,
+        quantity=15,
+        limit_price=1445.0,
+        trigger_price=1450.0,
+        status=OrderStatus.TRIGGER_PENDING,
+        is_exit=True,
+        created_at_ist=datetime.now(IST_TZ),
+    )
+    om.orders[pending_ord.order_id] = pending_ord
+    broker.orders[pending_ord.order_id] = pending_ord
+    broker.open_orders[pending_ord.order_id] = pending_ord
+    set_engine(engine)
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/api/v1/control/orders/pend-sl-1/cancel",
+            headers={"X-API-Key": settings.trillionaire_admin_key},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "cancelled"
+        assert om.orders["pend-sl-1"].status == OrderStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_auth_kite_token_auto_reconnects_ticker_and_milestone(monkeypatch):
+    """
+    Verifies fresh token push reconnects KiteTicker without flattening open positions,
+    and get_lifecycle_milestones() reports ticker_connected as passed when connected/subscribed.
+    """
+    import api_bridge.routes.settings_control as sc
+    monkeypatch.setattr(sc, "persist_env_updates", lambda updates: None)
+    monkeypatch.setattr(sc, "reload_settings_from_env", lambda: None)
+
+    bus = EventBus()
+    mock_kite = MagicMock()
+    mock_auth = MagicMock()
+    mock_auth.get_kite_client.return_value = mock_kite
+
+    engine = TrillionaireEngine(
+        trading_mode=TradingMode.PAPER,
+        event_bus=bus,
+        auth_manager=mock_auth,
+    )
+    engine.is_running = True
+    engine.is_booted = True
+    engine.broker.tokens_to_subscribe = [738561, 256265]
+    engine.broker.token_expired = True
+
+    reconnect_res = await engine.reconnect_kite_ticker(
+        kite_client=mock_kite,
+        access_token="fresh-tok",
+        resolved_tokens=[738561, 256265],
+    )
+    assert reconnect_res["subscribed_tokens"] == 2
+    assert engine.broker.token_expired is False
+    assert engine.broker._is_running is True
+
+    # Simulate live KiteTicker connected state
+    engine.broker.ticker_connected = True
+    milestones = engine.get_lifecycle_milestones()
+    m_map = {m["id"]: m for m in milestones["milestones"]}
+    assert m_map["ticker_connected"]["status"] == "passed"
+    await engine.broker.stop()
+
+

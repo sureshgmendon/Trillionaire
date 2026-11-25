@@ -532,6 +532,34 @@ export function useTrillionaireStream() {
     []
   );
 
+  // 7b. Cancel a Pending OPEN / TRIGGER PENDING Order
+  const cancelOrder = useCallback(async (orderId: string) => {
+    try {
+      const apiBase = getApiBaseUrl();
+      const resp = await fetch(
+        `${apiBase}/api/v1/control/orders/${encodeURIComponent(orderId)}/cancel`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-API-Key": ADMIN_KEY,
+          },
+        }
+      );
+      if (resp.ok) {
+        const ordRes = await fetch(`${apiBase}/api/v1/orders`);
+        if (ordRes.ok) {
+          setOrders(await ordRes.json());
+        }
+        return { success: true, message: "Order cancelled." };
+      }
+      const err = await resp.json().catch(() => ({}));
+      return { success: false, message: err.detail || "Failed to cancel order" };
+    } catch (e: any) {
+      return { success: false, message: e.message || "Network error" };
+    }
+  }, []);
+
   // 8. Dynamic Live Unrealized P&L Calculation across active positions
   const liveUnrealizedPnl = (function calculateLiveUnrealized() {
     if (!positions || positions.length === 0) {
@@ -573,6 +601,7 @@ export function useTrillionaireStream() {
     setSelectedTimeframe,
     liveUnrealizedPnl,
     exitPosition,
+    cancelOrder,
     triggerEmergencyFlatten,
     triggerReplay,
     startEngine,

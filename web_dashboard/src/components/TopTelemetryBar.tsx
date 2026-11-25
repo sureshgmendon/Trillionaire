@@ -156,8 +156,9 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
   const [kiteUserId, setKiteUserId] = React.useState<string>("");
 
   React.useEffect(() => {
+    const adminKey = process.env.NEXT_PUBLIC_ADMIN_KEY || "trillionaire-local-admin-123";
     fetch("/api/v1/settings", {
-      headers: { "X-API-Key": "trillionaire-local-admin-123" },
+      headers: { "X-API-Key": adminKey },
     })
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {

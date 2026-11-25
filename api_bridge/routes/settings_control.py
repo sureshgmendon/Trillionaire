@@ -403,48 +403,14 @@ async def _handle_kite_oauth_callback(
                 logger.warning(f"[KITE OAUTH CALLBACK] Instrument sync kite client assignment: {e}")
 
         # Resolve all 100 universe stocks + 8 parent sector indices tokens
-        from trading_engine.brokers.kite.kite_broker import KiteBroker
         resolved_tokens = engine._resolve_subscribed_tokens()
 
-        ticker_client = None
-        api_key = settings.kite_api_key or getattr(kite_client, "api_key", "")
-        if api_key and not api_key.startswith("your_"):
-            try:
-                from kiteconnect import KiteTicker
-                ticker_client = KiteTicker(api_key=api_key, access_token=access_token)
-                logger.info("[KITE OAUTH CALLBACK] Instantiated KiteTicker.")
-            except Exception as e:
-                logger.warning(f"[KITE OAUTH CALLBACK] Could not instantiate KiteTicker: {e}")
-
-        # Immediately connect KiteBroker + KiteTicker with all tokens
-        if isinstance(engine.broker, KiteBroker):
-            if hasattr(engine.broker, "clear_token_expiry"):
-                engine.broker.clear_token_expiry()
-            engine.broker.kite = kite_client
-            if ticker_client is not None:
-                engine.broker.ticker = ticker_client
-                engine.broker._setup_ticker_callbacks()
-            engine.broker.tokens_to_subscribe = resolved_tokens
-            if hasattr(engine.broker, "subscribe_tokens"):
-                engine.broker.subscribe_tokens(resolved_tokens)
-        else:
-            engine.broker = KiteBroker(
-                kite_client=kite_client,
-                ticker_client=ticker_client,
-                event_bus=engine.bus,
-                instrument_sync=engine.instrument_sync,
-                tokens_to_subscribe=resolved_tokens,
-            )
-            if hasattr(engine.broker, "set_order_manager") and callable(engine.broker.set_order_manager):
-                engine.broker.set_order_manager(engine.order_manager)
-
-        # Restart engine if already running or start live Kite session
-        if engine.is_running:
-            logger.info("[KITE OAUTH CALLBACK] Restarting engine to switch live streaming to Zerodha Kite.")
-            await engine.stop()
-            await engine.start()
-        elif hasattr(engine.broker, "start") and callable(engine.broker.start):
-            await engine.broker.start()
+        # Reconnect KiteTicker cleanly in-place without stopping the engine or flattening positions
+        await engine.reconnect_kite_ticker(
+            kite_client=kite_client,
+            access_token=access_token,
+            resolved_tokens=resolved_tokens,
+        )
 
         # Broadcast telemetry snapshot to all UI clients
         from api_bridge.ws.telemetry_manager import telemetry_manager
@@ -553,49 +519,13 @@ async def push_kite_token(
         except Exception as e:
             logger.warning(f"[PUSH TOKEN] Instrument sync kite client assignment: {e}")
 
-    # Resolve all 100 universe stocks + 8 parent sector indices tokens
-    from trading_engine.brokers.kite.kite_broker import KiteBroker
+    # Resolve all 100 universe stocks + 8 parent sector indices tokens & reconnect KiteTicker immediately
     resolved_tokens = engine._resolve_subscribed_tokens()
-
-    # Instantiate KiteTicker
-    ticker_client = None
-    api_key = settings.kite_api_key or getattr(kite_client, "api_key", "")
-    if api_key and not api_key.startswith("your_"):
-        try:
-            from kiteconnect import KiteTicker
-            ticker_client = KiteTicker(api_key=api_key, access_token=access_token)
-            logger.info("[PUSH TOKEN] Instantiated KiteTicker.")
-        except Exception as e:
-            logger.warning(f"[PUSH TOKEN] Could not instantiate KiteTicker: {e}")
-
-    if isinstance(engine.broker, KiteBroker):
-        if hasattr(engine.broker, "clear_token_expiry"):
-            engine.broker.clear_token_expiry()
-        engine.broker.kite = kite_client
-        if ticker_client is not None:
-            engine.broker.ticker = ticker_client
-            engine.broker._setup_ticker_callbacks()
-        engine.broker.tokens_to_subscribe = resolved_tokens
-        if hasattr(engine.broker, "subscribe_tokens"):
-            engine.broker.subscribe_tokens(resolved_tokens)
-    else:
-        engine.broker = KiteBroker(
-            kite_client=kite_client,
-            ticker_client=ticker_client,
-            event_bus=engine.bus,
-            instrument_sync=engine.instrument_sync,
-            tokens_to_subscribe=resolved_tokens,
-        )
-
-    if hasattr(engine.broker, "set_order_manager") and callable(engine.broker.set_order_manager):
-        engine.broker.set_order_manager(engine.order_manager)
-
-    # Start live Kite session
-    if hasattr(engine.broker, "start") and callable(engine.broker.start):
-        try:
-            await engine.broker.start()
-        except Exception as e:
-            logger.warning(f"[PUSH TOKEN] KiteBroker start warning: {e}")
+    await engine.reconnect_kite_ticker(
+        kite_client=kite_client,
+        access_token=access_token,
+        resolved_tokens=resolved_tokens,
+    )
 
     # Broadcast telemetry snapshot
     from api_bridge.ws.telemetry_manager import telemetry_manager
@@ -612,4 +542,13 @@ async def push_kite_token(
         "trading_mode": engine.trading_mode.value,
         "timestamp_ist": datetime.now(IST_TZ).isoformat(),
     }
+
+
+@router.post("/auth/kite-token", dependencies=[Depends(verify_admin_api_key)])
+async def push_kite_token_alias(
+    payload: PushTokenRequest,
+    engine: TrillionaireEngine = Depends(get_engine),
+) -> Dict[str, Any]:
+    """Alias for /api/v1/kite/push-token accepting fresh daily Kite token pushes."""
+    return await push_kite_token(payload=payload, engine=engine)
 
