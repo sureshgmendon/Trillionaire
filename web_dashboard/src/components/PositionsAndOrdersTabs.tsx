@@ -1,14 +1,17 @@
 "use client";
 
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import {
   Activity,
   Download,
   ListOrdered,
+  Maximize2,
+  Minimize2,
   PieChart,
   Search,
   X,
 } from "lucide-react";
+import { isIstCutoffWindow } from "@/lib/istTime";
 import {
   AnomalyAlert,
   ClosedTrade,
@@ -97,6 +100,26 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
   const [reportSearch, setReportSearch] = useState("");
   const [exitingSymbols, setExitingSymbols] = useState<Record<string, boolean>>({});
   const [cancellingOrders, setCancellingOrders] = useState<Record<string, boolean>>({});
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [istCutoffActive, setIstCutoffActive] = useState(false);
+
+  useEffect(() => {
+    const sync = () => setIstCutoffActive(isIstCutoffWindow());
+    sync();
+    const timer = setInterval(sync, 15000);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!isExpanded) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setIsExpanded(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isExpanded]);
 
   // ---------------------------------------------------------------------------
   // Tab 1: OPEN (Pending Orders Only: OPEN, TRIGGER PENDING, PENDING_NEW)
@@ -323,53 +346,118 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
     return Math.max(...reportItems.map((i) => Math.abs(i.pnl)), 1);
   }, [reportItems]);
 
-  const downloadReportCsv = () => {
-    if (filteredReportItems.length === 0) return;
-    const headers = [
-      "Product",
-      "Instrument",
-      "Side",
-      "Qty",
-      "Avg",
-      "SL",
-      "Target",
-      "LTP",
-      "P&L",
-      "Chg %",
-      "Exit Reason",
-    ];
-    const rows = filteredReportItems.map((item) =>
-      [
-        item.product,
-        item.instrument,
-        item.side,
-        item.qty,
-        item.avg.toFixed(2),
-        item.slPrice !== undefined ? item.slPrice.toFixed(2) : "",
-        item.targetPrice !== undefined ? item.targetPrice.toFixed(2) : "",
-        item.ltp.toFixed(2),
-        item.pnl.toFixed(2),
-        `${item.chgPct.toFixed(2)}%`,
-        item.exitReason || (item.isOpen ? "OPEN" : ""),
-      ]
-        .map((cell) => `"${String(cell).replace(/"/g, '""')}"`)
-        .join(",")
-    );
+  const escapeCsvRow = (cells: (string | number)[]) =>
+    cells.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(",");
 
-    const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows].join("\n");
-    const encodedUri = encodeURI(csvContent);
+  const triggerCsvDownload = (lines: string[], filename: string) => {
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `trillionaire_pnl_report_${new Date().toISOString().slice(0, 10)}.csv`);
+    link.setAttribute("href", url);
+    link.setAttribute("download", filename);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const downloadReportCsv = () => {
+    if (filteredReportItems.length === 0 && executedOrders.length === 0) return;
+
+    const lines: string[] = [];
+
+    // Section 1: P&L Report + TOTAL Summary Row
+    lines.push("=== P&L REPORT ===");
+    lines.push(
+      escapeCsvRow([
+        "Product",
+        "Instrument",
+        "Qty",
+        "Avg",
+        "LTP",
+        "P&L",
+        "Chg %",
+        "Status / Exit Reason",
+      ])
+    );
+    for (const item of filteredReportItems) {
+      lines.push(
+        escapeCsvRow([
+          item.product,
+          item.instrument,
+          item.qty,
+          item.avg.toFixed(2),
+          item.ltp.toFixed(2),
+          item.pnl.toFixed(2),
+          `${item.chgPct.toFixed(2)}%`,
+          item.exitReason || (item.isOpen ? "OPEN" : ""),
+        ])
+      );
+    }
+    lines.push(
+      escapeCsvRow([
+        "TOTAL",
+        `Realized: ${totalReportRealized >= 0 ? "+" : ""}${totalReportRealized.toFixed(2)} | Unrealized: ${
+          totalReportUnrealized >= 0 ? "+" : ""
+        }${totalReportUnrealized.toFixed(2)}`,
+        "",
+        "",
+        "",
+        totalReportPnl.toFixed(2),
+        "",
+        "COMBINED TOTAL P&L",
+      ])
+    );
+
+    // Two blank separator rows
+    lines.push("");
+    lines.push("");
+
+    // Section 2: Executed Orders
+    lines.push("=== EXECUTED ORDERS ===");
+    lines.push(
+      escapeCsvRow([
+        "Time",
+        "Type",
+        "Instrument",
+        "Product",
+        "Qty",
+        "Avg Price",
+        "Status",
+        "Exit / Rejection Reason",
+      ])
+    );
+    for (const o of executedOrders) {
+      lines.push(
+        escapeCsvRow([
+          formatIstTime(o.created_at_ist),
+          o.side,
+          o.tradingsymbol,
+          o.product || "MIS",
+          `${o.filled_quantity}/${o.quantity}`,
+          (o.average_fill_price ?? o.limit_price ?? 0).toFixed(2),
+          o.status === "FILLED" ? "COMPLETE" : o.status,
+          o.rejection_reason || o.exit_reason || "",
+        ])
+      );
+    }
+
+    triggerCsvDownload(
+      lines,
+      `trillionaire_pnl_and_orders_${new Date().toISOString().slice(0, 10)}.csv`
+    );
   };
 
   return (
-    <div className="h-full flex flex-col bg-cockpit-card rounded-xl border border-cockpit-border overflow-hidden select-none">
+    <div
+      className={
+        isExpanded
+          ? "fixed inset-0 z-50 bg-slate-950 flex flex-col p-4 select-none"
+          : "h-full flex flex-col bg-cockpit-card rounded-xl border border-cockpit-border overflow-hidden select-none"
+      }
+    >
       {/* Zerodha Kite-Style 3-Tab Header Navigation */}
-      <div className="h-11 border-b border-cockpit-border px-3 flex items-center justify-between shrink-0">
+      <div className="h-11 shrink-0 border-b border-cockpit-border px-3 flex items-center justify-between gap-2">
         <div className="flex items-center space-x-1">
           {/* Tab 1: Open ({pendingCount}) */}
           <button
@@ -414,88 +502,113 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
           </button>
         </div>
 
-        {/* Search & CSV Controls */}
-        {activeTab === "EXECUTED" && (
-          <div className="flex items-center space-x-2">
-            <div className="relative">
-              <Search className="h-3 w-3 absolute left-2 top-2 text-cockpit-muted" />
-              <input
-                type="text"
-                placeholder="Search executed..."
-                value={executedSearch}
-                onChange={(e) => setExecutedSearch(e.target.value)}
-                className="pl-7 pr-6 py-0.5 text-xs bg-cockpit-surface border border-cockpit-border rounded text-white placeholder-cockpit-muted/60 focus:outline-none focus:border-cockpit-borderBright w-36 sm:w-44"
-              />
-              {executedSearch && (
-                <button
-                  type="button"
-                  onClick={() => setExecutedSearch("")}
-                  className="absolute right-1.5 top-1.5 text-cockpit-muted hover:text-white"
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              )}
-            </div>
-            <button
-              type="button"
-              onClick={downloadExecutedCsv}
-              title="Download Executed Orders CSV"
-              className="px-2 py-1 rounded bg-cockpit-surface hover:bg-cockpit-hover border border-cockpit-border text-cockpit-muted hover:text-white text-xs font-mono flex items-center space-x-1 transition"
-            >
-              <Download className="h-3 w-3 text-purple-400" />
-              <span className="hidden sm:inline">CSV</span>
-            </button>
-          </div>
-        )}
+        {/* Search, CSV & Full-Screen Expand Controls */}
+        <div className="flex items-center space-x-2">
+          {activeTab === "EXECUTED" && (
+            <>
+              <div className="relative">
+                <Search className="h-3 w-3 absolute left-2 top-2 text-cockpit-muted" />
+                <input
+                  type="text"
+                  placeholder="Search executed..."
+                  value={executedSearch}
+                  onChange={(e) => setExecutedSearch(e.target.value)}
+                  className="pl-7 pr-6 py-0.5 text-xs bg-cockpit-surface border border-cockpit-border rounded text-white placeholder-cockpit-muted/60 focus:outline-none focus:border-cockpit-borderBright w-36 sm:w-44"
+                />
+                {executedSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setExecutedSearch("")}
+                    className="absolute right-1.5 top-1.5 text-cockpit-muted hover:text-white"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={downloadExecutedCsv}
+                title="Download Executed Orders CSV"
+                className="px-2 py-1 rounded bg-cockpit-surface hover:bg-cockpit-hover border border-cockpit-border text-cockpit-muted hover:text-white text-xs font-mono flex items-center space-x-1 transition"
+              >
+                <Download className="h-3 w-3 text-purple-400" />
+                <span className="hidden sm:inline">CSV</span>
+              </button>
+            </>
+          )}
 
-        {activeTab === "REPORT" && (
-          <div className="flex items-center space-x-2">
-            <div className="relative">
-              <Search className="h-3 w-3 absolute left-2 top-2 text-cockpit-muted" />
-              <input
-                type="text"
-                placeholder="Search P&L..."
-                value={reportSearch}
-                onChange={(e) => setReportSearch(e.target.value)}
-                className="pl-7 pr-6 py-0.5 text-xs bg-cockpit-surface border border-cockpit-border rounded text-white placeholder-cockpit-muted/60 focus:outline-none focus:border-cockpit-borderBright w-36 sm:w-44"
-              />
-              {reportSearch && (
-                <button
-                  type="button"
-                  onClick={() => setReportSearch("")}
-                  className="absolute right-1.5 top-1.5 text-cockpit-muted hover:text-white"
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              )}
-            </div>
-            <button
-              type="button"
-              onClick={downloadReportCsv}
-              title="Download P&L Report CSV"
-              className="px-2 py-1 rounded bg-cockpit-surface hover:bg-cockpit-hover border border-cockpit-border text-cockpit-muted hover:text-white text-xs font-mono flex items-center space-x-1 transition"
-            >
-              <Download className="h-3 w-3 text-emerald-400" />
-              <span className="hidden sm:inline">CSV</span>
-            </button>
-          </div>
-        )}
+          {activeTab === "REPORT" && (
+            <>
+              <div className="relative">
+                <Search className="h-3 w-3 absolute left-2 top-2 text-cockpit-muted" />
+                <input
+                  type="text"
+                  placeholder="Search P&L..."
+                  value={reportSearch}
+                  onChange={(e) => setReportSearch(e.target.value)}
+                  className="pl-7 pr-6 py-0.5 text-xs bg-cockpit-surface border border-cockpit-border rounded text-white placeholder-cockpit-muted/60 focus:outline-none focus:border-cockpit-borderBright w-36 sm:w-44"
+                />
+                {reportSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setReportSearch("")}
+                    className="absolute right-1.5 top-1.5 text-cockpit-muted hover:text-white"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={downloadReportCsv}
+                title="Download Combined P&L Report & Executed Orders CSV"
+                className="px-2 py-1 rounded bg-cockpit-surface hover:bg-cockpit-hover border border-cockpit-border text-cockpit-muted hover:text-white text-xs font-mono flex items-center space-x-1 transition"
+              >
+                <Download className="h-3 w-3 text-emerald-400" />
+                <span className="hidden sm:inline">CSV</span>
+              </button>
+            </>
+          )}
+
+          <button
+            type="button"
+            onClick={() => setIsExpanded((prev) => !prev)}
+            title={isExpanded ? "Exit Full-Screen View (Esc)" : "Expand Full-Screen View"}
+            className="px-2 py-1 rounded bg-cockpit-surface hover:bg-cockpit-hover border border-cockpit-border text-cockpit-muted hover:text-white text-xs font-mono flex items-center space-x-1 transition"
+          >
+            {isExpanded ? (
+              <>
+                <Minimize2 className="h-3.5 w-3.5 text-cyan-400" />
+                <span>Close (Esc)</span>
+              </>
+            ) : (
+              <>
+                <Maximize2 className="h-3.5 w-3.5 text-cyan-400" />
+                <span className="hidden sm:inline">Expand</span>
+              </>
+            )}
+          </button>
+        </div>
       </div>
 
       {/* TAB 1: OPEN / PENDING ORDERS ONLY */}
       {activeTab === "OPEN" && (
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 min-h-0 overflow-y-auto">
           {pendingOrders.length === 0 ? (
-            <div className="h-full flex flex-col items-center justify-center text-cockpit-muted text-xs font-mono space-y-1">
+            <div className="h-full flex flex-col items-center justify-center text-cockpit-muted text-xs font-mono space-y-1 px-4 text-center">
               <Activity className="h-6 w-6 text-cockpit-muted/40 mb-1" />
-              <span>No open or trigger-pending orders.</span>
+              <span>
+                {istCutoffActive
+                  ? "No new intraday entries after 14:30 IST (auto square-off at 15:10 IST)"
+                  : "No open or trigger-pending orders."}
+              </span>
               <span className="text-[10px]">
                 Active filled positions are tracked live under P&L Report.
               </span>
             </div>
           ) : (
             <table className="w-full text-left text-xs font-mono">
-              <thead className="sticky top-0 bg-cockpit-surface/90 backdrop-blur-sm border-b border-cockpit-border text-[10px] text-cockpit-muted uppercase">
+              <thead className="sticky top-0 z-10 bg-slate-950/95 backdrop-blur border-b border-cockpit-border text-[10px] text-cockpit-muted uppercase">
                 <tr>
                   <th className="py-2 px-3">Time</th>
                   <th className="py-2 px-2">Type</th>
@@ -586,7 +699,7 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
 
       {/* TAB 2: EXECUTED ORDERS (COMPLETE / CANCELLED / REJECTED) */}
       {activeTab === "EXECUTED" && (
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 min-h-0 overflow-y-auto">
           {filteredExecutedOrders.length === 0 ? (
             <div className="h-full flex items-center justify-center text-cockpit-muted text-xs font-mono">
               <span>
@@ -597,7 +710,7 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
             </div>
           ) : (
             <table className="w-full text-left text-xs font-mono">
-              <thead className="sticky top-0 bg-cockpit-surface/90 backdrop-blur-sm border-b border-cockpit-border text-[10px] text-cockpit-muted uppercase">
+              <thead className="sticky top-0 z-10 bg-slate-950/95 backdrop-blur border-b border-cockpit-border text-[10px] text-cockpit-muted uppercase">
                 <tr>
                   <th className="py-2 px-3">Time</th>
                   <th className="py-2 px-2">Type</th>
@@ -688,7 +801,7 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
 
       {/* TAB 3: P&L REPORT (Live Running Positions + Closed Trades Ledger & Bar Chart) */}
       {activeTab === "REPORT" && (
-        <div className="flex-1 overflow-y-auto flex flex-col">
+        <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
           {filteredReportItems.length === 0 ? (
             <div className="h-full flex items-center justify-center text-cockpit-muted text-xs font-mono">
               <span>
@@ -701,7 +814,7 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
             <div className="flex-1 flex flex-col">
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs font-mono">
-                  <thead className="sticky top-0 bg-cockpit-surface/90 backdrop-blur-sm border-b border-cockpit-border text-[10px] text-cockpit-muted uppercase">
+                  <thead className="sticky top-0 z-10 bg-slate-950/95 backdrop-blur border-b border-cockpit-border text-[10px] text-cockpit-muted uppercase">
                     <tr>
                       <th className="py-2 px-3">Product</th>
                       <th className="py-2 px-3">Instrument</th>

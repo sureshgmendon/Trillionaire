@@ -360,10 +360,13 @@ export const InteractiveChartPanel: React.FC<InteractiveChartPanelProps> = ({
       }
     };
 
+    const resizeObserver = new ResizeObserver(() => handleResize());
+    resizeObserver.observe(container);
     window.addEventListener("resize", handleResize);
     handleResize();
 
     return () => {
+      resizeObserver.disconnect();
       container.removeEventListener("wheel", handleUserInteraction);
       container.removeEventListener("pointerdown", handleUserInteraction);
       container.removeEventListener("touchstart", handleUserInteraction);
@@ -507,7 +510,7 @@ export const InteractiveChartPanel: React.FC<InteractiveChartPanelProps> = ({
   return (
     <div className="h-full w-full flex flex-col bg-cockpit-card rounded-xl border border-cockpit-border overflow-hidden">
       {/* Chart Header Controls */}
-      <div className="h-12 border-b border-cockpit-border px-4 flex items-center justify-between select-none">
+      <div className="h-11 shrink-0 border-b border-cockpit-border px-4 flex items-center justify-between select-none">
         <div className="flex items-center space-x-3">
           <div className="flex items-baseline space-x-2">
             <span className="font-bold text-base text-white tracking-wide">{symbol}</span>
@@ -604,7 +607,7 @@ export const InteractiveChartPanel: React.FC<InteractiveChartPanelProps> = ({
       </div>
 
       {/* Chart Canvas Container */}
-      <div className="relative flex-1 w-full min-h-[360px]">
+      <div className="relative flex-1 w-full min-h-[200px]">
         <div ref={chartContainerRef} className="absolute inset-0" />
       </div>
     </div>

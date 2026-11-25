@@ -45,18 +45,18 @@ export const WatchlistAndSentinelMatrix: React.FC<WatchlistAndSentinelMatrixProp
   return (
     <div className="h-full flex flex-col bg-cockpit-card rounded-xl border border-cockpit-border overflow-hidden select-none">
       {/* Header & Search Filter */}
-      <div className="h-12 border-b border-cockpit-border px-3 flex items-center justify-between">
-        <div className="flex items-center space-x-2">
-          <Zap className="h-4 w-4 text-cockpit-blue" />
-          <span className="font-bold text-xs uppercase tracking-wider text-white">
-            Watchlist & Sentinel Matrix
+      <div className="h-11 shrink-0 border-b border-cockpit-border px-3 flex items-center justify-between gap-2">
+        <div className="flex items-center space-x-1.5 min-w-0">
+          <Zap className="h-4 w-4 text-cockpit-blue shrink-0" />
+          <span className="font-bold text-xs uppercase tracking-wider text-white truncate">
+            Watchlist
           </span>
-          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-cockpit-surface text-cockpit-muted">
+          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-cockpit-surface text-cockpit-muted shrink-0">
             {profiles.length}
           </span>
         </div>
 
-        <div className="relative w-36">
+        <div className="relative w-28 sm:w-32 shrink-0">
           <Search className="h-3.5 w-3.5 absolute left-2 top-2 text-cockpit-muted" />
           <input
             type="text"
@@ -69,9 +69,9 @@ export const WatchlistAndSentinelMatrix: React.FC<WatchlistAndSentinelMatrixProp
       </div>
 
       {/* Table Content */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 min-h-0 overflow-y-auto">
         <table className="w-full text-left text-xs font-mono">
-          <thead className="sticky top-0 bg-cockpit-surface/90 backdrop-blur-sm border-b border-cockpit-border text-[10px] text-cockpit-muted uppercase tracking-wider">
+          <thead className="sticky top-0 z-10 bg-slate-950/95 backdrop-blur border-b border-cockpit-border text-[10px] text-cockpit-muted uppercase tracking-wider">
             <tr>
               <th className="py-2 px-3">Symbol</th>
               <th className="py-2 px-2">Regime</th>

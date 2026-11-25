@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { ClosedTrade, EngineStatus, Position, Tick } from "@/types/telemetry";
 import { ConnectionStatus } from "@/hooks/useTrillionaireStream";
+import { getIstClockString, isIstCutoffWindow } from "@/lib/istTime";
 
 interface TopTelemetryBarProps {
   connectionStatus: ConnectionStatus;
@@ -59,23 +60,17 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
   onRefresh,
 }) => {
   const [istTime, setIstTime] = useState<string>("");
+  const [cutoffActive, setCutoffActive] = useState<boolean>(false);
   const [showConfirmFlatten, setShowConfirmFlatten] = useState(false);
   const [isFlattening, setIsFlattening] = useState(false);
   const [flattenToast, setFlattenToast] = useState<string | null>(null);
 
-  // Live IST Clock
+  // Live IST Clock & Session Cutoff Detection
   useEffect(() => {
     const updateTime = () => {
       const now = new Date();
-      // Format to IST
-      const istStr = now.toLocaleTimeString("en-IN", {
-        timeZone: "Asia/Kolkata",
-        hour12: false,
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-      });
-      setIstTime(istStr);
+      setIstTime(getIstClockString(now));
+      setCutoffActive(isIstCutoffWindow(now));
     };
 
     updateTime();
@@ -150,7 +145,7 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
 
   return (
     <>
-      <header className="h-16 bg-cockpit-card border-b border-cockpit-border px-4 flex items-center justify-between select-none">
+      <header className="shrink-0 py-2 min-h-[58px] leading-normal overflow-visible bg-cockpit-card border-b border-cockpit-border px-4 flex flex-wrap items-center justify-between gap-2 select-none">
         {/* Brand & Connection State */}
         <div className="flex items-center space-x-3">
           <div className="flex items-center space-x-2">
@@ -316,9 +311,16 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
         </div>
 
         {/* Daily MTM PnL Telemetry */}
-        <div className="flex items-center space-x-4">
-          <div className="text-right">
-            <div className="text-[10px] uppercase font-mono tracking-wider text-cockpit-muted flex items-center justify-end space-x-1">
+        <div className="flex items-center space-x-3">
+          {cutoffActive && (
+            <div className="hidden xl:flex items-center space-x-1.5 px-2.5 py-1 rounded bg-amber-500/15 border border-amber-500/40 text-amber-300 text-[11px] font-mono font-semibold">
+              <Clock className="h-3.5 w-3.5 text-amber-400" />
+              <span>NO NEW ENTRIES AFTER 14:30 IST</span>
+            </div>
+          )}
+
+          <div className="text-right py-0.5 leading-tight">
+            <div className="text-[10px] uppercase font-mono tracking-wider text-cockpit-muted flex items-center justify-end space-x-1 leading-normal">
               <span>Total Daily MTM</span>
               {isProfit ? (
                 <TrendingUp className="h-3 w-3 text-emerald-400" />
@@ -326,7 +328,7 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
                 <TrendingDown className="h-3 w-3 text-rose-400" />
               )}
             </div>
-            <div className="flex items-baseline justify-end space-x-2">
+            <div className="flex items-baseline justify-end space-x-2 leading-tight">
               <span
                 className={`font-mono text-lg font-bold tracking-tight tabular-nums ${
                   isProfit ? "text-emerald-400" : "text-rose-400"
@@ -344,7 +346,7 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
                 {mtmPct.toFixed(2)}%)
               </span>
             </div>
-            <div className="text-[10px] font-mono text-cockpit-muted flex items-center justify-end space-x-2">
+            <div className="text-[10px] font-mono text-cockpit-muted flex items-center justify-end space-x-2 leading-normal">
               <span>
                 Realized:{" "}
                 <span className={`tabular-nums font-semibold ${liveRealizedPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
@@ -374,8 +376,8 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
             </div>
           ) : null}
 
-          {/* Action Buttons */}
-          <div className="flex items-center space-x-2">
+          {/* Mobile Action Buttons (hidden on lg+ desktop where Bottom-Left Engine Controls panel handles them) */}
+          <div className="flex lg:hidden items-center space-x-2">
             {/* Safe Pause / Resume Trading Toggle & Engine Start */}
             {status?.is_running ? (
               <div className="flex items-center space-x-1">

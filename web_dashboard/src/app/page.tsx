@@ -4,6 +4,7 @@ import React, { useMemo, useState } from "react";
 import { TopTelemetryBar } from "@/components/TopTelemetryBar";
 import { InteractiveChartPanel } from "@/components/InteractiveChartPanel";
 import { WatchlistAndSentinelMatrix } from "@/components/WatchlistAndSentinelMatrix";
+import { EngineControlsPanel } from "@/components/EngineControlsPanel";
 import { PositionsAndOrdersTabs } from "@/components/PositionsAndOrdersTabs";
 import { ReplayControlModal } from "@/components/ReplayControlModal";
 import { SettingsControlModal } from "@/components/SettingsControlModal";
@@ -71,8 +72,8 @@ export default function CockpitPage() {
   }, [riskAlerts, sentinelSummary?.headlines]);
 
   return (
-    <div className="min-h-screen flex flex-col bg-cockpit-bg text-cockpit-text font-mono">
-      {/* 1. Header Telemetry Bar */}
+    <div className="min-h-screen lg:h-screen lg:overflow-hidden flex flex-col bg-cockpit-bg text-cockpit-text font-mono">
+      {/* 1. Pinned Top Header Telemetry Bar */}
       <TopTelemetryBar
         connectionStatus={connectionStatus}
         status={status}
@@ -98,25 +99,47 @@ export default function CockpitPage() {
       />
 
       {/* 2. Scrolling Token-Free News & Alert Marquee */}
-      <NewsMarquee headlines={mergedHeadlines} />
+      <div className="shrink-0">
+        <NewsMarquee headlines={mergedHeadlines} />
+      </div>
 
-      {/* 3. Main High-Density Cockpit Grid */}
-      <main className="flex-1 p-3 grid grid-cols-1 xl:grid-cols-12 gap-3 overflow-hidden">
-        {/* Left Column (4 cols): Watchlist & Sentinel Matrix */}
-        <div className="xl:col-span-4 h-[calc(100vh-5.5rem)] min-h-[500px]">
-          <WatchlistAndSentinelMatrix
-            profiles={profiles}
-            ticks={ticks}
-            selectedSymbol={selectedSymbol}
-            onSelectSymbol={setSelectedSymbol}
-            onOverrideLock={overrideSentinelLock}
-          />
+      {/* 3. Main Zero-Outer-Scroll 4-Quadrant Cockpit Grid */}
+      <main className="flex-1 min-h-0 flex flex-col lg:flex-row gap-2 p-2 overflow-y-auto lg:overflow-hidden">
+        {/* Left Column: Watchlist (Top-Left 58%) + Engine Controls (Bottom-Left 42%) */}
+        <div className="lg:w-[340px] shrink-0 flex flex-col gap-2 min-h-0">
+          <div className="flex-[58] min-h-0">
+            <WatchlistAndSentinelMatrix
+              profiles={profiles}
+              ticks={ticks}
+              selectedSymbol={selectedSymbol}
+              onSelectSymbol={setSelectedSymbol}
+              onOverrideLock={overrideSentinelLock}
+            />
+          </div>
+          <div className="hidden lg:block flex-[42] min-h-0">
+            <EngineControlsPanel
+              status={status}
+              liveDailyMtm={liveDailyMtm}
+              onStartEngine={startEngine}
+              onStopEngine={stopEngine}
+              onPauseTrading={pauseTrading}
+              onResumeTrading={resumeTrading}
+              onOpenSettingsModal={(tab) => {
+                if (tab && (tab === "execution" || tab === "broker" || tab === "alerts")) {
+                  setSettingsTab(tab);
+                }
+                setIsSettingsModalOpen(true);
+              }}
+              onOpenReplayModal={() => setIsReplayModalOpen(true)}
+              onRefresh={refreshState}
+              onEmergencyFlatten={triggerEmergencyFlatten}
+            />
+          </div>
         </div>
 
-        {/* Right Column (8 cols): Interactive Chart + Positions & Orders */}
-        <div className="xl:col-span-8 flex flex-col space-y-3 h-[calc(100vh-5.5rem)] min-h-[500px]">
-          {/* Top Half: TradingView Lightweight Candlestick Chart */}
-          <div className="flex-1 min-h-[380px]">
+        {/* Right Column: Chart (Top-Right 58%) + Orders/Report Tabs (Bottom-Right 42%) */}
+        <div className="flex-1 flex flex-col gap-2 min-h-0 min-w-0">
+          <div className="flex-[58] min-h-0">
             <InteractiveChartPanel
               symbol={selectedSymbol}
               profile={selectedProfile}
@@ -129,9 +152,7 @@ export default function CockpitPage() {
               onTimeframeChange={setSelectedTimeframe}
             />
           </div>
-
-          {/* Bottom Half: Positions, Order Book & Immutable Report Tabs */}
-          <div className="h-[280px]">
+          <div className="flex-[42] min-h-0">
             <PositionsAndOrdersTabs
               positions={positions}
               orders={orders}
