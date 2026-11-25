@@ -18,11 +18,12 @@ from loguru import logger
 from config.settings import settings
 from sentinel.orchestrator import SentinelOrchestrator
 from shared.constants import IST_TZ
-from shared.enums import DataFeederType, Timeframe, TradingMode
-from shared.schemas import Candle, Signal
+from shared.enums import DataFeederType, OrderStatus, OrderType, Side, Timeframe, TradingMode
+from shared.schemas import Candle, ClosedTrade, Order, Position, Signal
 
 from trading_engine.brokers.kite.auth import KiteAuthManager
 from trading_engine.brokers.kite.instruments import InstrumentSync
+from trading_engine.core.daily_state import DailyStateStore
 
 if TYPE_CHECKING:
     from trading_engine.brokers.kite.kite_broker import KiteBroker
@@ -105,13 +106,15 @@ class TrillionaireEngine:
                 kite_client=kite_client,
                 event_bus=self.bus,
                 instrument_sync=self.instrument_sync,
+                trading_mode=self.trading_mode,
             )
         else:
             self.broker = PaperBroker(event_bus=self.bus)
             self.auth_manager = auth_manager
             self.instrument_sync = instrument_sync or InstrumentSync()
 
-        # 6. Order Manager
+        # 6. Order Manager & Daily State Persistence
+        self.state_store = DailyStateStore()
         default_om_broker = (
             self.broker
             if (self.trading_mode == TradingMode.LIVE or isinstance(self.broker, PaperBroker))
@@ -121,7 +124,10 @@ class TrillionaireEngine:
             event_bus=self.bus,
             broker=default_om_broker,
             risk_gatekeeper=self.risk_gatekeeper,
+            on_state_change=self.persist_daily_state,
         )
+        if getattr(self.order_manager, "on_state_change", None) is None:
+            self.order_manager.on_state_change = self.persist_daily_state
 
         self._live_broker = self.broker
 
@@ -348,6 +354,8 @@ class TrillionaireEngine:
 
         if isinstance(self.broker, KiteBroker) or hasattr(self.broker, "tokens_to_subscribe"):
             self.broker.tokens_to_subscribe = resolved_tokens
+            if hasattr(self.broker, "trading_mode"):
+                self.broker.trading_mode = self.trading_mode
             if kite_client is not None and getattr(self.broker, "kite", None) is None:
                 self.broker.kite = kite_client
             if ticker_client is not None and getattr(self.broker, "ticker", None) is None:
@@ -361,6 +369,7 @@ class TrillionaireEngine:
                 event_bus=self.bus,
                 instrument_sync=self.instrument_sync,
                 tokens_to_subscribe=resolved_tokens,
+                trading_mode=self.trading_mode,
             )
 
         if hasattr(self.broker, "set_order_manager") and callable(self.broker.set_order_manager):
@@ -392,8 +401,6 @@ class TrillionaireEngine:
         # 2. Stop live Kite broker / ticker
         if hasattr(self.broker, "stop") and callable(self.broker.stop):
             await self.broker.stop()
-
-        logger.info("[ENGINE STOPPED] Engine successfully halted.")
 
         logger.info("[ENGINE STOPPED] Engine successfully halted.")
 
@@ -430,17 +437,50 @@ class TrillionaireEngine:
         logger.info("[ENGINE CONTROL] Trading execution RESUMED.")
         return {"status": "resumed", "trading_paused": False}
 
+    def persist_daily_state(self) -> None:
+        """Persists today's orders, open positions, closed trades, funnel counters, and paper balance to disk."""
+        if not hasattr(self, "state_store") or self.state_store is None:
+            return
+        target_date = self.current_trade_date or datetime.now(IST_TZ).date()
+        realized = (
+            round(sum(t.realized_pnl for t in self.order_manager.closed_trades), 2)
+            if self.order_manager.closed_trades
+            else self.risk_gatekeeper.realized_daily_pnl
+        )
+        paper_balance = round(self.risk_gatekeeper.allocated_capital + realized, 2)
+        self.state_store.save_state(
+            trade_date=target_date,
+            orders=[o.model_dump(mode="json") for o in self.order_manager.orders.values()],
+            open_positions=[p.model_dump(mode="json") for p in self.order_manager.open_positions.values()],
+            closed_trades=[t.model_dump(mode="json") for t in self.order_manager.closed_trades],
+            funnel_metrics=self.funnel_metrics,
+            paper_balance=paper_balance,
+            allocated_capital=self.risk_gatekeeper.allocated_capital,
+            realized_pnl=realized,
+            risk_per_trade_pct=self.risk_gatekeeper.risk_per_trade_pct,
+        )
+
     def rehydrate_from_redis(self, trade_date: Optional[date] = None) -> Dict[str, Any]:
-        """Rehydrates today's orders and realized PnL from Redis so trade history persists across restarts."""
+        """Rehydrates today's orders, closed_trades, open positions, funnel counts, and realized PnL from Redis + Disk."""
         target_date = trade_date or (self.current_trade_date or datetime.now(IST_TZ).date())
         today_iso = target_date.isoformat()
         orders_rehydrated = 0
+        closed_rehydrated = 0
         pnl_rehydrated = 0.0
+
+        status_map = {
+            "PENDING_NEW": OrderStatus.PENDING_NEW,
+            "OPEN": OrderStatus.OPEN,
+            "TRIGGER PENDING": OrderStatus.TRIGGER_PENDING,
+            "FILLED": OrderStatus.FILLED,
+            "CANCELLED": OrderStatus.CANCELLED,
+            "REJECTED": OrderStatus.REJECTED,
+        }
+
+        # 1. Rehydrate from Redis
         try:
             import redis
             from config.settings import settings
-            from shared.enums import OrderStatus, OrderType, Side
-            from shared.schemas import Order
 
             r = redis.from_url(
                 settings.redis_url,
@@ -448,7 +488,6 @@ class TrillionaireEngine:
                 socket_connect_timeout=0.2,
                 socket_timeout=0.2,
             )
-            # 1. Rehydrate orders
             order_key = f"trillionaire:orders:{today_iso}"
             raw_orders = r.hgetall(order_key)
             if raw_orders:
@@ -460,34 +499,49 @@ class TrillionaireEngine:
                         else datetime.now(IST_TZ)
                     )
                     side_val = Side.BUY if data.get("side") == "BUY" else Side.SELL
-                    status_map = {
-                        "PENDING_NEW": OrderStatus.PENDING_NEW,
-                        "OPEN": OrderStatus.OPEN,
-                        "FILLED": OrderStatus.FILLED,
-                        "CANCELLED": OrderStatus.CANCELLED,
-                        "REJECTED": OrderStatus.REJECTED,
-                    }
                     status_enum = status_map.get(data.get("status"), OrderStatus.FILLED)
+                    ord_type = OrderType.SL_LIMIT if data.get("order_type") == "SL_LIMIT" else OrderType.LIMIT
                     order = Order(
                         order_id=data.get("order_id", oid),
                         signal_id=data.get("signal_id"),
                         tradingsymbol=data.get("tradingsymbol", ""),
                         side=side_val,
                         product=data.get("product", "MIS"),
-                        order_type=OrderType.LIMIT,
+                        order_type=ord_type,
                         quantity=int(data.get("quantity", 0)),
                         limit_price=data.get("limit_price"),
+                        trigger_price=data.get("trigger_price"),
+                        sl_price=data.get("sl_price"),
+                        target_price=data.get("target_price"),
                         filled_quantity=int(data.get("filled_quantity", 0)),
                         average_fill_price=data.get("average_fill_price"),
                         status=status_enum,
                         exit_reason=data.get("exit_reason"),
+                        rejection_reason=data.get("rejection_reason"),
+                        is_exit=bool(data.get("is_exit", False)),
+                        client_order_tag=data.get("client_order_tag"),
                         created_at_ist=created_at,
                         broker_order_id=data.get("broker_order_id"),
                     )
                     self.order_manager.orders[order.order_id] = order
                     orders_rehydrated += 1
 
-            # 2. Rehydrate realized PnL
+            # Rehydrate closed trades from Redis if present
+            closed_key = f"trillionaire:closed_trades:{today_iso}"
+            raw_closed = r.hgetall(closed_key)
+            if raw_closed:
+                existing_ids = {t.order_id for t in self.order_manager.closed_trades}
+                for _, raw_ct in raw_closed.items():
+                    try:
+                        ct_data = json.loads(raw_ct)
+                        if "actual_exit_price" in ct_data and ct_data.get("order_id") not in existing_ids:
+                            ct = ClosedTrade.model_validate(ct_data)
+                            self.order_manager.closed_trades.append(ct)
+                            existing_ids.add(ct.order_id)
+                            closed_rehydrated += 1
+                    except Exception:
+                        pass
+
             pnl_key = f"trillionaire:realized_pnl:{today_iso}"
             raw_pnl = r.get(pnl_key)
             if raw_pnl is not None:
@@ -500,8 +554,70 @@ class TrillionaireEngine:
         except Exception as e:
             logger.debug(f"[REHYDRATION] Redis rehydration bypassed: {e}")
 
+        # 2. Rehydrate from Disk DailyStateStore (covers open_positions, closed_trades, funnel, paper balance)
+        try:
+            disk_state = self.state_store.load_state(trade_date=target_date) if hasattr(self, "state_store") else None
+            if disk_state:
+                for raw_o in disk_state.get("orders", []):
+                    oid = raw_o.get("order_id")
+                    if oid and oid not in self.order_manager.orders:
+                        try:
+                            self.order_manager.orders[oid] = Order.model_validate(raw_o)
+                            orders_rehydrated += 1
+                        except Exception:
+                            pass
+
+                existing_ct_ids = {t.order_id for t in self.order_manager.closed_trades}
+                for raw_ct in disk_state.get("closed_trades", []):
+                    if raw_ct.get("order_id") not in existing_ct_ids:
+                        try:
+                            ct = ClosedTrade.model_validate(raw_ct)
+                            self.order_manager.closed_trades.append(ct)
+                            existing_ct_ids.add(ct.order_id)
+                            closed_rehydrated += 1
+                        except Exception:
+                            pass
+
+                for raw_pos in disk_state.get("open_positions", []):
+                    sym = raw_pos.get("tradingsymbol")
+                    if sym and sym not in self.order_manager.open_positions:
+                        try:
+                            pos = Position.model_validate(raw_pos)
+                            self.order_manager.open_positions[sym] = pos
+                            self.risk_gatekeeper.register_position(pos)
+                        except Exception:
+                            pass
+
+                if disk_state.get("funnel_metrics") and hasattr(self.strategy_runner, "funnel_metrics"):
+                    saved_f = disk_state["funnel_metrics"]
+                    for fk, fv in saved_f.items():
+                        self.strategy_runner.funnel_metrics[fk] = max(
+                            int(self.strategy_runner.funnel_metrics.get(fk, 0)), int(fv)
+                        )
+
+                if disk_state.get("allocated_capital"):
+                    self.risk_gatekeeper.allocated_capital = float(disk_state["allocated_capital"])
+                if disk_state.get("risk_per_trade_pct"):
+                    self.risk_gatekeeper.risk_per_trade_pct = float(disk_state["risk_per_trade_pct"])
+
+                if self.order_manager.closed_trades:
+                    pnl_rehydrated = round(sum(t.realized_pnl for t in self.order_manager.closed_trades), 2)
+                    self.risk_gatekeeper.realized_pnl = pnl_rehydrated
+                elif disk_state.get("realized_pnl") and self.risk_gatekeeper.realized_pnl == 0.0:
+                    pnl_rehydrated = float(disk_state["realized_pnl"])
+                    self.risk_gatekeeper.realized_pnl = pnl_rehydrated
+
+                logger.info(
+                    f"[DAILY STATE RESTORED] Orders={len(self.order_manager.orders)}, "
+                    f"ClosedTrades={len(self.order_manager.closed_trades)}, "
+                    f"OpenPositions={len(self.order_manager.open_positions)}, RealizedPnL=Rs.{pnl_rehydrated:.2f}"
+                )
+        except Exception as e:
+            logger.debug(f"[REHYDRATION] Disk state rehydration skipped: {e}")
+
         return {
             "orders_rehydrated": orders_rehydrated,
+            "closed_trades_rehydrated": closed_rehydrated,
             "realized_pnl_rehydrated": pnl_rehydrated,
         }
 
@@ -649,8 +765,16 @@ class TrillionaireEngine:
         }
 
     def set_trading_mode(self, mode: TradingMode) -> None:
-        """Updates trading mode dynamically."""
+        """Updates trading mode dynamically and syncs broker reconciler & execution routing."""
         self.trading_mode = mode
+        if hasattr(self.broker, "trading_mode"):
+            self.broker.trading_mode = mode
+        if mode == TradingMode.LIVE:
+            if self._live_broker is not None and not isinstance(self._live_broker, PaperBroker):
+                self.order_manager.broker = self._live_broker
+        else:
+            if not isinstance(self.order_manager.broker, PaperBroker):
+                self.order_manager.broker = PaperBroker(event_bus=self.bus)
         logger.info(f"[ENGINE MODE UPDATED] Trading mode set to {mode.value}")
 
     def set_data_feeder(self, feeder_type: DataFeederType) -> None:
@@ -719,6 +843,8 @@ class TrillionaireEngine:
         resolved_tokens = self._resolve_subscribed_tokens()
         if isinstance(self.broker, KiteBroker) or hasattr(self.broker, "tokens_to_subscribe"):
             self.broker.tokens_to_subscribe = resolved_tokens
+            if hasattr(self.broker, "trading_mode"):
+                self.broker.trading_mode = self.trading_mode
         else:
             kite_client = None
             if self.auth_manager is not None:
@@ -731,6 +857,7 @@ class TrillionaireEngine:
                 event_bus=self.bus,
                 instrument_sync=self.instrument_sync,
                 tokens_to_subscribe=resolved_tokens,
+                trading_mode=self.trading_mode,
             )
             if hasattr(self.broker, "set_order_manager") and callable(self.broker.set_order_manager):
                 self.broker.set_order_manager(self.order_manager)
@@ -749,6 +876,13 @@ class TrillionaireEngine:
 
     def get_status(self) -> Dict[str, Any]:
         """Returns comprehensive diagnostic and operational metrics snapshot."""
+        realized = (
+            round(sum(t.realized_pnl for t in self.order_manager.closed_trades), 2)
+            if self.order_manager.closed_trades
+            else self.risk_gatekeeper.realized_daily_pnl
+        )
+        unrealized = round(sum(pos.unrealized_pnl for pos in self.order_manager.open_positions.values()), 2)
+        total_mtm = round(realized + unrealized, 2)
         return {
             "is_running": self.is_running,
             "is_booted": self.is_booted,
@@ -758,11 +892,17 @@ class TrillionaireEngine:
             "current_trade_date": self.current_trade_date.isoformat() if self.current_trade_date else None,
             "capital_tier": self.risk_gatekeeper.tier_name,
             "allocated_capital": self.risk_gatekeeper.allocated_capital,
-            "daily_realized_pnl": self.risk_gatekeeper.realized_daily_pnl,
-            "daily_total_mtm": self.risk_gatekeeper.get_total_daily_mtm(),
+            "paper_balance": round(self.risk_gatekeeper.allocated_capital + realized, 2),
+            "risk_per_trade_pct": self.risk_gatekeeper.risk_per_trade_pct,
+            "daily_realized_pnl": realized,
+            "daily_unrealized_pnl": unrealized,
+            "daily_total_mtm": total_mtm,
             "kill_switch_active": self.risk_gatekeeper.kill_switch_active,
             "profit_lock_armed": self.risk_gatekeeper.profit_lock_armed,
+            "token_expired": bool(getattr(self.broker, "token_expired", False)),
+            "ticker_reconnecting": bool(getattr(self.broker, "ticker_reconnecting", False)),
             "open_positions_count": len(self.order_manager.open_positions),
+            "closed_trades_count": len(self.order_manager.closed_trades),
             "milestones": self.get_lifecycle_milestones(),
             "funnel_metrics": getattr(self.strategy_runner, "funnel_metrics", {
                 "candles_evaluated": 0,

@@ -18,9 +18,12 @@ export type Side = "BUY" | "SELL";
 
 export type OrderType = "LIMIT" | "SL_LIMIT";
 
+export type TimeframeCode = "M1" | "M3" | "M5" | "M15";
+
 export type OrderStatus =
   | "PENDING_NEW"
   | "OPEN"
+  | "TRIGGER PENDING"
   | "PARTIALLY_FILLED"
   | "FILLED"
   | "CANCELLED"
@@ -101,9 +104,15 @@ export interface Order {
   quantity: number;
   filled_quantity: number;
   limit_price?: number;
+  trigger_price?: number;
   average_fill_price?: number;
   status: OrderStatus;
   exit_reason?: string;
+  rejection_reason?: string;
+  sl_price?: number;
+  target_price?: number;
+  is_exit?: boolean;
+  client_order_tag?: string;
   created_at_ist: string;
 }
 
@@ -117,6 +126,27 @@ export interface Position {
   realized_pnl: number;
   stop_loss: number;
   target_price: number;
+  entry_time?: string;
+  entry_order_id?: string;
+  sl_order_id?: string;
+  tp_order_id?: string;
+}
+
+export interface ClosedTrade {
+  order_id: string;
+  symbol: string;
+  product: string;
+  side: Side;
+  filled_qty: number;
+  entry_price: number;
+  sl_price: number;
+  target_price: number;
+  actual_exit_price: number;
+  realized_pnl: number;
+  pnl_pct: number;
+  exit_reason: string;
+  entry_time: string;
+  exit_time: string;
 }
 
 export interface AnomalyAlert {
@@ -188,12 +218,17 @@ export interface EngineStatus {
   trading_paused?: boolean;
   capital_tier: string;
   allocated_capital: number;
+  paper_balance?: number;
+  risk_per_trade_pct?: number;
   daily_mtm: number;
   realized_pnl: number;
   unrealized_pnl: number;
   circuit_breaker_tripped: boolean;
   profit_floor_armed: boolean;
+  token_expired?: boolean;
+  ticker_reconnecting?: boolean;
   open_positions_count: number;
+  closed_trades_count?: number;
   active_stocks_count: number;
   milestones?: PipelineMilestones;
   funnel_metrics?: FunnelMetrics;
@@ -213,6 +248,8 @@ export interface RuntimeSettings {
   data_feeder: DataFeederType;
   active_capital_tier: string;
   allocated_capital: number;
+  risk_per_trade_pct?: number;
+  token_expired?: boolean;
   available_capital_tiers: string[];
   engine_running: boolean;
   engine_booted: boolean;
@@ -231,10 +268,15 @@ export interface UpdateSettingsPayload {
   trading_mode?: TradingMode;
   data_feeder?: DataFeederType;
   active_capital_tier?: string;
+  allocated_capital?: number;
+  risk_per_trade_pct?: number;
 }
 
 export interface SnapshotPayload {
   status: Partial<EngineStatus>;
+  open_positions?: Position[];
+  closed_trades?: ClosedTrade[];
+  sentinel_tags?: Record<string, SentinelTag>;
   latest_ticks: Record<string, Tick>;
   latest_candles: Record<string, Candle>;
   recent_signals: Signal[];

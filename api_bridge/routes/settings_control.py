@@ -89,6 +89,8 @@ class UpdateSettingsRequest(BaseModel):
     trading_mode: Optional[TradingMode] = Field(default=None, description="REPLAY, PAPER, or LIVE")
     data_feeder: Optional[DataFeederType] = Field(default=DataFeederType.ZERODHA_KITE, description="ZERODHA_KITE")
     active_capital_tier: Optional[str] = Field(default=None, description="Tier key in capital_tiers.yaml")
+    allocated_capital: Optional[float] = Field(default=None, gt=0, description="Custom paper/live allocated capital override")
+    risk_per_trade_pct: Optional[float] = Field(default=None, gt=0, le=10.0, description="Risk per trade percentage override")
 
 
 class PushTokenRequest(BaseModel):
@@ -137,6 +139,8 @@ async def get_runtime_settings(engine: TrillionaireEngine = Depends(get_engine))
         "data_feeder": engine.data_feeder.value,
         "active_capital_tier": engine.risk_gatekeeper.tier_name,
         "allocated_capital": engine.risk_gatekeeper.allocated_capital,
+        "risk_per_trade_pct": engine.risk_gatekeeper.risk_per_trade_pct,
+        "token_expired": bool(getattr(engine.broker, "token_expired", False)),
         "available_capital_tiers": available_tiers,
         "engine_running": engine.is_running,
         "engine_booted": engine.is_booted,
@@ -183,6 +187,12 @@ async def update_runtime_settings(
             tier_name = updates["active_capital_tier"]
             engine.risk_gatekeeper.set_capital_tier(tier_name)
 
+        # 3b. Apply custom paper capital / risk per trade overrides after tier load
+        if "allocated_capital" in updates:
+            engine.risk_gatekeeper.allocated_capital = float(updates["allocated_capital"])
+        if "risk_per_trade_pct" in updates:
+            engine.risk_gatekeeper.risk_per_trade_pct = float(updates["risk_per_trade_pct"])
+
         # 4. Update trading mode on engine if updated
         if "trading_mode" in updates:
             new_mode = TradingMode(updates["trading_mode"])
@@ -192,6 +202,10 @@ async def update_runtime_settings(
         if "data_feeder" in updates:
             new_feeder = DataFeederType(updates["data_feeder"])
             engine.set_data_feeder(new_feeder)
+
+        # 6. Persist daily state snapshot with updated capital & risk settings
+        if hasattr(engine, "persist_daily_state"):
+            engine.persist_daily_state()
 
     # Return refreshed settings
     return {
@@ -404,6 +418,8 @@ async def _handle_kite_oauth_callback(
 
         # Immediately connect KiteBroker + KiteTicker with all tokens
         if isinstance(engine.broker, KiteBroker):
+            if hasattr(engine.broker, "clear_token_expiry"):
+                engine.broker.clear_token_expiry()
             engine.broker.kite = kite_client
             if ticker_client is not None:
                 engine.broker.ticker = ticker_client
@@ -553,6 +569,8 @@ async def push_kite_token(
             logger.warning(f"[PUSH TOKEN] Could not instantiate KiteTicker: {e}")
 
     if isinstance(engine.broker, KiteBroker):
+        if hasattr(engine.broker, "clear_token_expiry"):
+            engine.broker.clear_token_expiry()
         engine.broker.kite = kite_client
         if ticker_client is not None:
             engine.broker.ticker = ticker_client

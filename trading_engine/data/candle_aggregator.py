@@ -85,13 +85,15 @@ class CandleAggregator:
         timeframes: Optional[List[Timeframe]] = None,
     ):
         self.bus = event_bus or bus
-        self.timeframes = timeframes or [Timeframe.M1, Timeframe.M5, Timeframe.M15]
+        self.timeframes = timeframes or [Timeframe.M1, Timeframe.M3, Timeframe.M5, Timeframe.M15]
         # (symbol, timeframe) -> TimeframeState
         self._states: Dict[Tuple[str, Timeframe], TimeframeState] = {}
         # symbol -> last cumulative volume from broker tick
         self._last_tick_volumes: Dict[str, int] = {}
         # symbol -> latest closed candles per timeframe
         self._latest_closed_candles: Dict[Tuple[str, Timeframe], Candle] = {}
+        # (symbol, timeframe) -> rolling list of intraday closed candles
+        self.candle_history: Dict[Tuple[str, Timeframe], List[Candle]] = {}
 
         # Register EventBus subscribers
         self.bus.subscribe(TickEvent, self.on_tick_event)
@@ -497,6 +499,10 @@ class CandleAggregator:
                 close_event = CandleCloseEvent(candle=closed_candle)
                 closed_events.append(close_event)
                 self._latest_closed_candles[(symbol, tf)] = closed_candle
+                hist = self.candle_history.setdefault((symbol, tf), [])
+                hist.append(closed_candle)
+                if len(hist) > 300:
+                    del hist[:-300]
 
                 # Publish onto EventBus immediately
                 await self.bus.publish(close_event)
@@ -638,3 +644,174 @@ class CandleAggregator:
         """Returns current Opening Range (OR_High, OR_Low) for symbol."""
         state = self.get_state(symbol, Timeframe.M1)
         return state.or_high, state.or_low
+
+    def get_candles_for_symbol(
+        self,
+        symbol: str,
+        timeframe: Timeframe = Timeframe.M5,
+        limit: int = 150,
+        kite_client: Optional[Any] = None,
+        instrument_sync: Optional[Any] = None,
+    ) -> List[Candle]:
+        """
+        Returns sorted intraday candles for `(symbol, timeframe)` combining historical Parquet/API
+        lookback with live aggregated bars for interactive chart timeframe & symbol switching.
+        """
+        live_bars = list(self.candle_history.get((symbol, timeframe), []))
+        if len(live_bars) >= min(limit, 30):
+            return live_bars[-limit:]
+
+        historical_bars: List[Candle] = []
+        store_path = Path(__file__).resolve().parent.parent.parent / "research_lab" / "data_store"
+        clean_sym = symbol.replace(":", "_").replace(" ", "_")
+        candidates = [
+            store_path / f"{clean_sym}_1m.parquet",
+            store_path / f"{symbol}_1m.parquet",
+            store_path / f"{symbol.replace('-', '_')}_1m.parquet",
+        ]
+        parquet_file = next((f for f in candidates if f.exists()), None)
+
+        raw_1m_rows: List[Dict[str, Any]] = []
+        if parquet_file is not None:
+            try:
+                df = pl.read_parquet(parquet_file).tail(max(limit * timeframe.minutes, 300))
+                raw_1m_rows = df.to_dicts()
+            except Exception as e:
+                logger.debug(f"[CANDLES API] Failed reading parquet {parquet_file}: {e}")
+
+        # Live Kite / Yahoo intraday fallback if parquet has no data
+        if not raw_1m_rows:
+            if kite_client is not None and instrument_sync is not None:
+                tok = instrument_sync.get_token(symbol)
+                if tok:
+                    try:
+                        now_ist = datetime.now(IST_TZ)
+                        interval = f"{timeframe.minutes}minute" if timeframe.minutes > 1 else "minute"
+                        recs = kite_client.historical_data(
+                            instrument_token=tok,
+                            from_date=(now_ist - timedelta(days=5)).date(),
+                            to_date=now_ist.date(),
+                            interval=interval,
+                        )
+                        for r in recs or []:
+                            raw_1m_rows.append({
+                                "timestamp": r.get("date") or r.get("timestamp"),
+                                "open": float(r["open"]),
+                                "high": float(r["high"]),
+                                "low": float(r["low"]),
+                                "close": float(r["close"]),
+                                "volume": int(r.get("volume", 1)),
+                            })
+                    except Exception as e:
+                        logger.debug(f"[CANDLES API] Kite historical skipped for {symbol}: {e}")
+
+        if raw_1m_rows:
+            # Bucket rows into target timeframe
+            buckets: Dict[datetime, Dict[str, Any]] = {}
+            for row in raw_1m_rows:
+                raw_ts = row.get("timestamp") or row.get("date")
+                if isinstance(raw_ts, str):
+                    try:
+                        dt = datetime.fromisoformat(raw_ts)
+                    except Exception:
+                        continue
+                elif isinstance(raw_ts, datetime):
+                    dt = raw_ts
+                else:
+                    continue
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=IST_TZ)
+                else:
+                    dt = dt.astimezone(IST_TZ)
+
+                b_start = self._get_bucket_start_time(dt, timeframe)
+                op = float(row.get("open", row.get("close", 0.0)))
+                hi = float(row.get("high", op))
+                lo = float(row.get("low", op))
+                cl = float(row.get("close", op))
+                vol = int(row.get("volume", 1))
+                if cl <= 0 or op <= 0:
+                    continue
+                if b_start not in buckets:
+                    buckets[b_start] = {
+                        "open": op,
+                        "high": hi,
+                        "low": lo,
+                        "close": cl,
+                        "volume": max(1, vol),
+                    }
+                else:
+                    b = buckets[b_start]
+                    b["high"] = max(b["high"], hi)
+                    b["low"] = min(b["low"], lo)
+                    b["close"] = cl
+                    b["volume"] += max(0, vol)
+
+            sorted_times = sorted(buckets.keys())
+            ema_200: Optional[float] = None
+            alpha_200 = 2.0 / 201.0
+            vwap_pv = 0.0
+            vwap_v = 0.0
+            cur_date: Optional[date] = None
+
+            for b_ts in sorted_times[-limit:]:
+                b = buckets[b_ts]
+                if cur_date != b_ts.date():
+                    cur_date = b_ts.date()
+                    vwap_pv = 0.0
+                    vwap_v = 0.0
+                tp = (b["high"] + b["low"] + b["close"]) / 3.0
+                v = max(1, b["volume"])
+                vwap_pv += tp * v
+                vwap_v += v
+                vwap_val = round(vwap_pv / vwap_v, 2)
+                ema_200 = b["close"] if ema_200 is None else round(b["close"] * alpha_200 + ema_200 * (1.0 - alpha_200), 2)
+
+                historical_bars.append(
+                    Candle(
+                        tradingsymbol=symbol,
+                        timeframe=timeframe,
+                        timestamp_ist=b_ts + timedelta(minutes=timeframe.minutes),
+                        open=round(b["open"], 2),
+                        high=round(b["high"], 2),
+                        low=round(b["low"], 2),
+                        close=round(b["close"], 2),
+                        volume=v,
+                        vwap=vwap_val,
+                        ema_200=ema_200,
+                        atr_14=round(max(0.05, b["high"] - b["low"]), 2),
+                        rvol=1.0,
+                    )
+                )
+
+        # Merge live session bars cleanly over historical bars by timestamp
+        merged: Dict[datetime, Candle] = {c.timestamp_ist: c for c in historical_bars}
+        for lc in live_bars:
+            merged[lc.timestamp_ist] = lc
+
+        # Also include ongoing partial bar if active ticks exist
+        st = self._states.get((symbol, timeframe))
+        if st is not None and st.current_bucket_start is not None and st.close > 0:
+            partial_ts = st.current_bucket_start + timedelta(minutes=timeframe.minutes)
+            tp = (st.high + st.low + st.close) / 3.0
+            p_vol = max(1, st.volume)
+            p_vwap = round(
+                (st.vwap_cum_pv + tp * p_vol) / (st.vwap_cum_vol + p_vol), 2
+            ) if (st.vwap_cum_vol + p_vol) > 0 else round(st.close, 2)
+            merged[partial_ts] = Candle(
+                tradingsymbol=symbol,
+                timeframe=timeframe,
+                timestamp_ist=partial_ts,
+                open=round(st.open, 2),
+                high=round(st.high, 2),
+                low=round(st.low, 2),
+                close=round(st.close, 2),
+                volume=p_vol,
+                vwap=p_vwap,
+                ema_200=round(st.ema_200 or st.close, 2),
+                atr_14=round(st.atr_14, 2),
+                rvol=1.0,
+            )
+
+        ordered = [merged[k] for k in sorted(merged.keys())]
+        return ordered[-limit:]

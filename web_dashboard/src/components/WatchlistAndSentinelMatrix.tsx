@@ -9,6 +9,7 @@ interface WatchlistAndSentinelMatrixProps {
   ticks: Record<string, Tick>;
   selectedSymbol: string;
   onSelectSymbol: (symbol: string) => void;
+  onOverrideLock?: (symbol: string) => Promise<{ success: boolean }>;
 }
 
 export const WatchlistAndSentinelMatrix: React.FC<WatchlistAndSentinelMatrixProps> = ({
@@ -16,8 +17,21 @@ export const WatchlistAndSentinelMatrix: React.FC<WatchlistAndSentinelMatrixProp
   ticks,
   selectedSymbol,
   onSelectSymbol,
+  onOverrideLock,
 }) => {
   const [searchQuery, setSearchQuery] = useState("");
+  const [overridingSymbol, setOverridingSymbol] = useState<string | null>(null);
+
+  const handleUnlock = async (e: React.MouseEvent, symbol: string) => {
+    e.stopPropagation();
+    if (!onOverrideLock) return;
+    setOverridingSymbol(symbol);
+    try {
+      await onOverrideLock(symbol);
+    } finally {
+      setOverridingSymbol(null);
+    }
+  };
 
   const filteredProfiles = profiles.filter((p) => {
     const q = searchQuery.toLowerCase();
@@ -119,10 +133,10 @@ export const WatchlistAndSentinelMatrix: React.FC<WatchlistAndSentinelMatrixProp
                     {p.oos_profit_factor > 0 ? p.oos_profit_factor.toFixed(2) : "—"}
                   </td>
 
-                  {/* Sentinel Status Badge with Tooltip */}
+                  {/* Sentinel Status Badge with Interactive Tooltip & Override */}
                   <td className="py-2 px-3 text-center">
                     <div className="group relative inline-block">
-                      {status === "NORMAL" ? (
+                      {status === "NORMAL" && p.is_active ? (
                         <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-cockpit-green/10 text-cockpit-green border border-cockpit-green/20">
                           <CheckCircle2 className="h-3 w-3" />
                           <span>1.0x</span>
@@ -139,11 +153,30 @@ export const WatchlistAndSentinelMatrix: React.FC<WatchlistAndSentinelMatrixProp
                         </span>
                       )}
 
-                      {/* Tooltip on Hover */}
-                      {sentinel?.reason && (
-                        <div className="absolute right-0 top-full mt-1 hidden group-hover:block z-50 w-56 p-2 rounded bg-cockpit-surface border border-cockpit-borderBright text-[10px] text-cockpit-text shadow-xl text-left pointer-events-none">
-                          <div className="font-bold text-white mb-0.5">Sentinel Triage:</div>
-                          <div className="leading-snug text-cockpit-muted">{sentinel.reason}</div>
+                      {/* Tooltip on Hover (supports 1-click Manual Sentinel Override) */}
+                      {(sentinel?.reason || !p.is_active || status === "DO_NOT_TRADE") && (
+                        <div className="absolute right-0 top-full pt-1 hidden group-hover:block z-50 w-60 text-left">
+                          <div className="p-2.5 rounded bg-cockpit-surface border border-cockpit-borderBright text-[10px] text-cockpit-text shadow-xl space-y-1.5">
+                            <div className="font-bold text-white">
+                              {status === "DO_NOT_TRADE" ? "Sentinel Lockout" : !p.is_active ? "PF Threshold Lockout" : "Sentinel Triage"}
+                            </div>
+                            <div className="leading-snug text-cockpit-muted">
+                              {sentinel?.reason ||
+                                (!p.is_active
+                                  ? `Disabled: OOS Profit Factor (${p.oos_profit_factor.toFixed(2)}) below 1.0 threshold.`
+                                  : "Blocked by intraday risk triage.")}
+                            </div>
+                            {status === "DO_NOT_TRADE" && onOverrideLock && (
+                              <button
+                                type="button"
+                                onClick={(e) => handleUnlock(e, p.tradingsymbol)}
+                                disabled={overridingSymbol === p.tradingsymbol}
+                                className="w-full mt-1 px-2 py-1 rounded bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/50 text-cyan-300 font-bold text-[10px] transition"
+                              >
+                                {overridingSymbol === p.tradingsymbol ? "Unlocking..." : "Manual Unlock (1.0x)"}
+                              </button>
+                            )}
+                          </div>
                         </div>
                       )}
                     </div>

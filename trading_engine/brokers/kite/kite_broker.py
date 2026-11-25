@@ -1,25 +1,33 @@
 """
 Trillionaire Kite Broker - Live KiteTicker Stream & KiteConnect Order Engine
 Provides live production broker integration with Zerodha Kite Connect:
-1. WebSocket Market Data (KiteTicker): Subscribes in MODE_FULL, normalizes raw ticks to Tick schemas,
-   and publishes TickEvent to EventBus with threadsafe dispatch.
-2. Live Order Execution (KiteConnect): Places MIS limit orders with statutory tick-size rounding,
-   tracks order lifecycle updates (on_order_update), and publishes OrderUpdateEvents.
-3. 5-Second State Reconciler: Periodically audits broker positions and orders against OrderManager,
-   adopting crash-orphaned positions and raising RiskAlertEvents on mismatches.
+1. WebSocket Market Data (KiteTicker): Single WS connection across all 100+ watchlist tokens
+   with exponential backoff reconnect and explicit symbol-to-token anti-bleed verification.
+2. Live Order Execution (KiteConnect): Supports MIS LIMIT & SL_LIMIT orders with tick-size rounding,
+   rate-limited REST calls (<=8 req/sec token bucket), and idempotent unique client order tags.
+3. Structured Kite Exception Guards: Catches TokenException, OrderException, MarginException,
+   InputException, NetworkException, and GeneralException. Immediately halts polling on TokenException.
+4. 5-Second State Reconciler & Live OCO Orderbook Sync.
 """
 
 import asyncio
 from datetime import datetime
+import json
+import random
 import threading
-from typing import Any, Dict, List, Optional
+import time
+from typing import Any, Callable, Dict, List, Optional
 import uuid
 from loguru import logger
 
 from research_lab.profiler.indian_charges import ChargesBreakdown, calculate_mis_net_pnl
 from shared.constants import IST_TZ
-from shared.enums import OrderStatus, OrderType, Side
-from shared.exceptions import BrokerConnectionError, OrderExecutionError
+from shared.enums import OrderStatus, OrderType, Side, TradingMode
+from shared.exceptions import (
+    BrokerConnectionError,
+    KiteTokenExpiredError,
+    OrderExecutionError,
+)
 from shared.schemas import Order, Position, Tick
 from trading_engine.brokers.kite.instruments import InstrumentSync
 from trading_engine.core.event_bus import (
@@ -29,6 +37,50 @@ from trading_engine.core.event_bus import (
     TickEvent,
     bus,
 )
+
+
+class TokenBucketRateLimiter:
+    """Threadsafe token-bucket limiter capping KiteConnect REST calls at <= max_per_sec (default 8/sec)."""
+
+    def __init__(self, rate_per_sec: float = 8.0, capacity: float = 8.0):
+        self.rate = rate_per_sec
+        self.capacity = capacity
+        self.tokens = capacity
+        self.last_refill = time.monotonic()
+        self._lock = threading.Lock()
+
+    def acquire(self) -> None:
+        while True:
+            wait_time = 0.0
+            with self._lock:
+                now = time.monotonic()
+                elapsed = now - self.last_refill
+                if elapsed > 0:
+                    self.tokens = min(self.capacity, self.tokens + elapsed * self.rate)
+                    self.last_refill = now
+                if self.tokens >= 1.0:
+                    self.tokens -= 1.0
+                    return
+                wait_time = (1.0 - self.tokens) / self.rate
+            time.sleep(min(wait_time, 0.25))
+
+
+def _classify_kite_exception(exc: Exception) -> str:
+    """Classifies KiteConnect exception by exact class name or message pattern."""
+    cls_name = type(exc).__name__
+    msg = str(exc)
+    msg_lower = msg.lower()
+    if "TokenException" in cls_name or "incorrect api_key or access_token" in msg_lower or "403" in msg_lower or "token" in cls_name.lower():
+        return "TokenException"
+    if "MarginException" in cls_name or "margin" in msg_lower or "insufficient funds" in msg_lower:
+        return "MarginException"
+    if "InputException" in cls_name or "invalid" in msg_lower:
+        return "InputException"
+    if "OrderException" in cls_name:
+        return "OrderException"
+    if "NetworkException" in cls_name or "429" in msg or "502" in msg or "504" in msg or "timeout" in msg_lower or "connection" in msg_lower:
+        return "NetworkException"
+    return "GeneralException" if "GeneralException" in cls_name else cls_name
 
 
 class KiteBroker:
@@ -43,6 +95,7 @@ class KiteBroker:
         order_manager: Optional[Any] = None,
         tokens_to_subscribe: Optional[List[int]] = None,
         reconciler_interval_sec: float = 5.0,
+        trading_mode: TradingMode = TradingMode.LIVE,
     ):
         self.kite = kite_client
         self.ticker = ticker_client
@@ -51,12 +104,22 @@ class KiteBroker:
         self.order_manager = order_manager
         self.tokens_to_subscribe: List[int] = tokens_to_subscribe or []
         self.reconciler_interval_sec = reconciler_interval_sec
+        self.trading_mode = trading_mode
+
+        # Rate limiter (max 8 req/sec)
+        self._rest_limiter = TokenBucketRateLimiter(rate_per_sec=8.0, capacity=8.0)
 
         # Internal tracking: order_id -> Order, broker_order_id -> order_id
         self.orders: Dict[str, Order] = {}
         self.broker_id_to_order_id: Dict[str, str] = {}
         self.latest_ticks: Dict[str, Tick] = {}
         self.trade_charges_history: List[ChargesBreakdown] = []
+
+        # Connection & token state flags
+        self.token_expired: bool = False
+        self.token_error_message: Optional[str] = None
+        self.ticker_connected: bool = False
+        self.ticker_reconnecting: bool = False
 
         # Background tasks and threads
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -79,24 +142,97 @@ class KiteBroker:
         """Sets latest tick in memory cache and forwards to PaperBroker if paper trading."""
         self.latest_ticks[tick.tradingsymbol] = tick
         if self.order_manager is not None:
+            if hasattr(self.order_manager, "_latest_ticks"):
+                self.order_manager._latest_ticks[tick.tradingsymbol] = tick
             om_broker = getattr(self.order_manager, "broker", None)
             if om_broker is not None and hasattr(om_broker, "set_latest_tick") and om_broker is not self:
                 om_broker.set_latest_tick(tick)
+
+    # -------------------------------------------------------------------------
+    # Structured Rate-Limited REST Execution Wrapper
+    # -------------------------------------------------------------------------
+
+    def _call_kite_rest(
+        self,
+        fn: Callable[..., Any],
+        *args: Any,
+        max_network_retries: int = 2,
+        **kwargs: Any,
+    ) -> Any:
+        """
+        Executes a synchronous KiteConnect REST API call guarded by:
+        - Token-bucket rate limiter (max 8 req/sec)
+        - Jittered exponential backoff on NetworkException / 429 / 502 / 504
+        - Immediate halt on TokenException
+        """
+        last_exc: Optional[Exception] = None
+        for attempt in range(max_network_retries + 1):
+            self._rest_limiter.acquire()
+            try:
+                return fn(*args, **kwargs)
+            except Exception as exc:
+                last_exc = exc
+                kind = _classify_kite_exception(exc)
+
+                if kind == "TokenException":
+                    self._handle_token_expiry(str(exc))
+                    raise KiteTokenExpiredError(f"Kite TokenException: {exc}") from exc
+
+                if kind == "NetworkException" and attempt < max_network_retries:
+                    backoff = (0.35 * (2 ** attempt)) + random.uniform(0.05, 0.25)
+                    logger.warning(
+                        f"[KITE REST RETRY] Network/429 error on attempt {attempt + 1}: {exc}. Backing off {backoff:.2f}s"
+                    )
+                    time.sleep(backoff)
+                    continue
+
+                raise
+
+        if last_exc is not None:
+            raise last_exc
+
+    def _handle_token_expiry(self, detail: str) -> None:
+        """Immediately halts REST polling on TokenException and alerts dashboard."""
+        already_expired = self.token_expired
+        self.token_expired = True
+        self.token_error_message = detail
+        if not already_expired:
+            logger.critical(f"[KITE TOKEN EXPIRED] Halting REST polling loops. Re-login required: {detail}")
+            self._dispatch_coroutine(
+                self.bus.publish(
+                    RiskAlertEvent(
+                        symbol="KITE_AUTH",
+                        level="CRITICAL",
+                        message="Zerodha Kite session expired (TokenException/403). Re-login via Settings & Keys.",
+                    )
+                )
+            )
+
+    def clear_token_expiry(self) -> None:
+        """Clears token_expired flag after fresh OAuth / token push."""
+        self.token_expired = False
+        self.token_error_message = None
 
     # -------------------------------------------------------------------------
     # WebSocket KiteTicker Streaming & Event Normalization
     # -------------------------------------------------------------------------
 
     def _setup_ticker_callbacks(self) -> None:
-        """Configures event callbacks on KiteTicker instance."""
+        """Configures event callbacks on KiteTicker instance (single WebSocket connection)."""
         self.ticker.on_ticks = self._on_ticks
         self.ticker.on_connect = self._on_connect
         self.ticker.on_close = self._on_close
         self.ticker.on_error = self._on_error
         self.ticker.on_order_update = self._on_order_update
+        if hasattr(self.ticker, "on_reconnect"):
+            self.ticker.on_reconnect = self._on_reconnect
+        if hasattr(self.ticker, "on_noreconnect"):
+            self.ticker.on_noreconnect = self._on_noreconnect
 
     def _on_connect(self, ws: Any, response: Any) -> None:
         """Callback when KiteTicker connects successfully."""
+        self.ticker_connected = True
+        self.ticker_reconnecting = False
         logger.info(f"[KITE TICKER] Connected. Subscribing to {len(self.tokens_to_subscribe)} instrument tokens...")
         if self.tokens_to_subscribe:
             ws.subscribe(self.tokens_to_subscribe)
@@ -104,11 +240,39 @@ class KiteBroker:
 
     def _on_close(self, ws: Any, code: int, reason: str) -> None:
         """Callback when KiteTicker disconnects."""
+        self.ticker_connected = False
+        if self._is_running:
+            self.ticker_reconnecting = True
         logger.warning(f"[KITE TICKER] Connection closed: code={code}, reason={reason}")
 
     def _on_error(self, ws: Any, code: int, reason: str) -> None:
         """Callback on KiteTicker transport error."""
         logger.error(f"[KITE TICKER] Error encountered: code={code}, reason={reason}")
+        if "403" in str(code) or "403" in str(reason) or "token" in str(reason).lower():
+            self._handle_token_expiry(f"WebSocket error {code}: {reason}")
+        elif self._is_running:
+            self.ticker_reconnecting = True
+
+    def _on_reconnect(self, ws: Any, attempts_count: int) -> None:
+        """Callback when KiteTicker attempts exponential-backoff reconnect."""
+        self.ticker_connected = False
+        self.ticker_reconnecting = True
+        logger.warning(f"[KITE TICKER] Reconnecting (attempt #{attempts_count})...")
+
+    def _on_noreconnect(self, ws: Any) -> None:
+        """Callback when KiteTicker exhausts reconnect retries."""
+        self.ticker_connected = False
+        self.ticker_reconnecting = False
+        logger.error("[KITE TICKER] Maximum reconnect attempts exhausted.")
+        self._dispatch_coroutine(
+            self.bus.publish(
+                RiskAlertEvent(
+                    symbol="KITE_WS",
+                    level="CRITICAL",
+                    message="KiteTicker WebSocket disconnected and max reconnect retries exhausted.",
+                )
+            )
+        )
 
     def _on_ticks(self, ws: Any, raw_ticks: List[Dict[str, Any]]) -> None:
         """Callback processing raw Kite tick payloads and dispatching TickEvents."""
@@ -121,14 +285,27 @@ class KiteBroker:
             self._dispatch_coroutine(self.bus.publish(TickEvent(tick=tick)))
 
     def normalize_kite_tick(self, raw_tick: Dict[str, Any]) -> Optional[Tick]:
-        """Normalizes a raw Zerodha Kite tick dictionary into a validated Tick schema."""
+        """
+        Normalizes a raw Zerodha Kite tick dictionary into a validated Tick schema.
+        Strictly enforces 1-to-1 instrument_token -> tradingsymbol lookup to prevent tick bleed.
+        """
         token = raw_tick.get("instrument_token")
         if not token:
             return None
+        token_int = int(token)
 
-        sym = self.instruments.get_symbol(token)
+        sym = self.instruments.get_symbol(token_int)
         if not sym:
-            sym = str(token)
+            logger.debug(f"[TICK AUDIT] Dropping unmapped instrument_token={token_int}")
+            return None
+
+        expected_tok = self.instruments.get_token(sym)
+        if expected_tok is not None and expected_tok != token_int:
+            logger.error(
+                f"[TICK BLEED GUARD] Dropping mismatched tick: token={token_int} mapped to {sym}, "
+                f"but canonical token for {sym} is {expected_tok}"
+            )
+            return None
 
         ltp = float(raw_tick.get("last_price", 0.0))
         if ltp <= 0.0:
@@ -157,7 +334,7 @@ class KiteBroker:
             dt = dt.astimezone(IST_TZ)
 
         return Tick(
-            instrument_token=token,
+            instrument_token=token_int,
             tradingsymbol=sym,
             timestamp_ist=dt,
             ltp=round(ltp, 2),
@@ -173,8 +350,12 @@ class KiteBroker:
         order_status_str = data.get("status", "")
         avg_price = float(data.get("average_price", 0.0))
         filled_qty = int(data.get("filled_quantity", 0))
+        status_message = data.get("status_message") or ""
 
-        logger.info(f"[KITE ORDER UPDATE] BrokerID={broker_order_id}, Status={order_status_str}, Filled={filled_qty} @ {avg_price}")
+        logger.info(
+            f"[KITE ORDER UPDATE] BrokerID={broker_order_id}, Status={order_status_str}, "
+            f"Filled={filled_qty} @ {avg_price}"
+        )
 
         # Map to internal order
         internal_id = self.broker_id_to_order_id.get(broker_order_id)
@@ -188,81 +369,156 @@ class KiteBroker:
             status_map = {
                 "COMPLETE": OrderStatus.FILLED,
                 "OPEN": OrderStatus.OPEN,
-                "TRIGGER PENDING": OrderStatus.OPEN,
+                "TRIGGER PENDING": OrderStatus.TRIGGER_PENDING,
                 "CANCELLED": OrderStatus.CANCELLED,
                 "REJECTED": OrderStatus.REJECTED,
             }
             order.status = status_map.get(order_status_str, order.status)
+            if order.status == OrderStatus.REJECTED and status_message:
+                order.rejection_reason = status_message
             self._dispatch_coroutine(self.bus.publish(OrderUpdateEvent(order=order)))
 
     def _dispatch_coroutine(self, coro: Any) -> None:
         """Dispatches an async coroutine thread-safely onto the active asyncio loop."""
         if self._loop is not None and self._loop.is_running():
             asyncio.run_coroutine_threadsafe(coro, self._loop)
-        else:
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.create_task(coro)
-            except Exception:
-                pass
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            if loop.is_running():
+                asyncio.create_task(coro)
+                return
+        except Exception:
+            pass
+        # Close unscheduled coroutine cleanly so tests without an active loop emit zero warnings
+        try:
+            coro.close()
+        except Exception:
+            pass
 
     # -------------------------------------------------------------------------
-    # Order Placement & Cancellation API
+    # Idempotent Order Placement & Cancellation API
     # -------------------------------------------------------------------------
+
+    def _find_existing_order_by_tag(self, client_tag: str) -> Optional[Dict[str, Any]]:
+        """Queries kite.orders() to detect if an idempotent order tag was already placed."""
+        if not client_tag or self.kite is None:
+            return None
+        try:
+            all_orders = self._call_kite_rest(self.kite.orders, max_network_retries=1)
+            for bo in all_orders or []:
+                if str(bo.get("tag", "")) == client_tag:
+                    return bo
+        except Exception as e:
+            logger.debug(f"[KITE IDEMPOTENCY] Orderbook tag lookup skipped ({client_tag}): {e}")
+        return None
 
     async def submit_order(self, order: Order) -> Order:
         """
-        Places live MIS limit order through Zerodha Kite Connect REST API.
-        Enforces tick-size rounding before API transmission.
+        Places live MIS LIMIT or SL_LIMIT order through Zerodha Kite Connect REST API.
+        Enforces tick-size rounding, rate limiting, structured exception handling, and idempotency.
         """
-        # Ensure price is rounded strictly to symbol's tick size
+        if self.token_expired:
+            order.status = OrderStatus.REJECTED
+            order.rejection_reason = "Kite daily token expired — re-login required before placing live orders"
+            await self.bus.publish(OrderUpdateEvent(order=order))
+            raise KiteTokenExpiredError(order.rejection_reason)
+
         if order.limit_price is not None:
             order.limit_price = self.instruments.round_price(order.tradingsymbol, order.limit_price)
+        if order.trigger_price is not None:
+            order.trigger_price = self.instruments.round_price(order.tradingsymbol, order.trigger_price)
 
+        client_tag = order.client_order_tag or f"tril_{order.order_id[:12]}"
+        order.client_order_tag = client_tag
         self.orders[order.order_id] = order
 
-        try:
-            kite_variety = getattr(self.kite, "VARIETY_REGULAR", "regular")
-            kite_exchange = getattr(self.kite, "EXCHANGE_NSE", "NSE")
-            kite_side = (
-                getattr(self.kite, "TRANSACTION_TYPE_BUY", "BUY")
-                if order.side == Side.BUY
-                else getattr(self.kite, "TRANSACTION_TYPE_SELL", "SELL")
-            )
-            kite_product = getattr(self.kite, "PRODUCT_MIS", "MIS")
+        kite_variety = getattr(self.kite, "VARIETY_REGULAR", "regular")
+        kite_exchange = getattr(self.kite, "EXCHANGE_NSE", "NSE")
+        kite_side = (
+            getattr(self.kite, "TRANSACTION_TYPE_BUY", "BUY")
+            if order.side == Side.BUY
+            else getattr(self.kite, "TRANSACTION_TYPE_SELL", "SELL")
+        )
+        kite_product = getattr(self.kite, "PRODUCT_MIS", "MIS")
+
+        if order.order_type == OrderType.SL_LIMIT:
+            kite_order_type = getattr(self.kite, "ORDER_TYPE_SL", "SL")
+        else:
             kite_order_type = getattr(self.kite, "ORDER_TYPE_LIMIT", "LIMIT")
 
-            broker_res = self.kite.place_order(
-                variety=kite_variety,
-                exchange=kite_exchange,
-                tradingsymbol=order.tradingsymbol,
-                transaction_type=kite_side,
-                quantity=order.quantity,
-                product=kite_product,
-                order_type=kite_order_type,
-                price=order.limit_price,
-                tag="trillionaire",
-            )
+        place_kwargs: Dict[str, Any] = {
+            "variety": kite_variety,
+            "exchange": kite_exchange,
+            "tradingsymbol": order.tradingsymbol,
+            "transaction_type": kite_side,
+            "quantity": order.quantity,
+            "product": kite_product,
+            "order_type": kite_order_type,
+            "price": order.limit_price,
+            "tag": client_tag,
+        }
+        if order.order_type == OrderType.SL_LIMIT and order.trigger_price is not None:
+            place_kwargs["trigger_price"] = order.trigger_price
+
+        try:
+            broker_res = None
+            try:
+                broker_res = self._call_kite_rest(
+                    self.kite.place_order,
+                    max_network_retries=0,  # Idempotent check handles retry safely
+                    **place_kwargs,
+                )
+            except Exception as first_exc:
+                kind = _classify_kite_exception(first_exc)
+                if kind == "NetworkException":
+                    # Idempotency guard: query kite.orders() by client_tag before retrying!
+                    existing = self._find_existing_order_by_tag(client_tag)
+                    if existing is not None:
+                        broker_res = str(existing.get("order_id", ""))
+                        logger.warning(
+                            f"[KITE IDEMPOTENCY] Found already-accepted order for tag={client_tag} "
+                            f"(BrokerID={broker_res}); avoiding duplicate order!"
+                        )
+                    else:
+                        broker_res = self._call_kite_rest(
+                            self.kite.place_order,
+                            max_network_retries=1,
+                            **place_kwargs,
+                        )
+                else:
+                    raise
 
             broker_order_id = str(broker_res if isinstance(broker_res, (str, int)) else broker_res.get("order_id", ""))
             order.broker_order_id = broker_order_id
-            order.status = OrderStatus.OPEN
+            order.status = (
+                OrderStatus.TRIGGER_PENDING if order.order_type == OrderType.SL_LIMIT else OrderStatus.OPEN
+            )
             self.broker_id_to_order_id[broker_order_id] = order.order_id
 
             logger.info(
                 f"[LIVE BROKER ORDER] Placed {order.tradingsymbol} {order.side.value} x {order.quantity} "
-                f"@ Rs.{order.limit_price:.2f} (InternalID: {order.order_id}, BrokerID: {broker_order_id})"
+                f"@ Rs.{(order.limit_price or 0.0):.2f} (Type={order.order_type.value}, BrokerID={broker_order_id})"
             )
 
             await self.bus.publish(OrderUpdateEvent(order=order))
             return order
 
         except Exception as e:
+            kind = _classify_kite_exception(e)
+            err_msg = f"[{kind}] {str(e)}"
             order.status = OrderStatus.REJECTED
-            logger.error(f"[LIVE BROKER ERROR] Order placement failed for {order.tradingsymbol}: {e}")
+            order.rejection_reason = err_msg
+            logger.error(f"[LIVE BROKER ERROR] Order placement failed for {order.tradingsymbol}: {err_msg}")
             await self.bus.publish(OrderUpdateEvent(order=order))
-            raise OrderExecutionError(f"KiteConnect place_order failed: {e}") from e
+            await self.bus.publish(
+                RiskAlertEvent(
+                    symbol=order.tradingsymbol,
+                    level="CRITICAL",
+                    message=f"Broker order rejected for {order.tradingsymbol}: {err_msg}",
+                )
+            )
+            raise OrderExecutionError(f"KiteConnect place_order failed: {err_msg}") from e
 
     async def cancel_order(self, order_id: str) -> Optional[Order]:
         """Cancels an open order through Zerodha Kite Connect REST API."""
@@ -273,7 +529,8 @@ class KiteBroker:
 
         try:
             kite_variety = getattr(self.kite, "VARIETY_REGULAR", "regular")
-            self.kite.cancel_order(
+            self._call_kite_rest(
+                self.kite.cancel_order,
                 variety=kite_variety,
                 order_id=order.broker_order_id,
             )
@@ -283,8 +540,9 @@ class KiteBroker:
             return order
 
         except Exception as e:
-            logger.error(f"Failed to cancel order {order_id}: {e}")
-            raise OrderExecutionError(f"KiteConnect cancel_order failed: {e}") from e
+            kind = _classify_kite_exception(e)
+            logger.error(f"Failed to cancel order {order_id} ({kind}): {e}")
+            raise OrderExecutionError(f"KiteConnect cancel_order failed [{kind}]: {e}") from e
 
     def record_completed_trade(
         self,
@@ -304,26 +562,76 @@ class KiteBroker:
         return breakdown
 
     # -------------------------------------------------------------------------
-    # 5-Second State Reconciler
+    # 5-Second State Reconciler & Live Orderbook Sync
     # -------------------------------------------------------------------------
+
+    async def _sync_broker_orders(self) -> None:
+        """Polls kite.orders() safely to catch any SL/Target fills missed over WS."""
+        if self.kite is None or not hasattr(self.kite, "orders") or self.token_expired:
+            return
+        if not self.broker_id_to_order_id:
+            return
+        try:
+            broker_orders = self._call_kite_rest(self.kite.orders, max_network_retries=0)
+            status_map = {
+                "COMPLETE": OrderStatus.FILLED,
+                "OPEN": OrderStatus.OPEN,
+                "TRIGGER PENDING": OrderStatus.TRIGGER_PENDING,
+                "CANCELLED": OrderStatus.CANCELLED,
+                "REJECTED": OrderStatus.REJECTED,
+            }
+            for bo in broker_orders or []:
+                boid = str(bo.get("order_id", ""))
+                internal_id = self.broker_id_to_order_id.get(boid)
+                if not internal_id or internal_id not in self.orders:
+                    continue
+                ord_obj = self.orders[internal_id]
+                new_status = status_map.get(bo.get("status", ""), ord_obj.status)
+                if new_status != ord_obj.status:
+                    ord_obj.status = new_status
+                    ord_obj.filled_quantity = int(bo.get("filled_quantity", ord_obj.filled_quantity))
+                    avg_px = float(bo.get("average_price", 0.0))
+                    if avg_px > 0:
+                        ord_obj.average_fill_price = avg_px
+                    if new_status == OrderStatus.REJECTED and bo.get("status_message"):
+                        ord_obj.rejection_reason = bo["status_message"]
+                    await self.bus.publish(OrderUpdateEvent(order=ord_obj))
+        except KiteTokenExpiredError:
+            pass
+        except Exception as e:
+            logger.debug(f"[ORDERBOOK SYNC] Skipped: {e}")
 
     async def reconcile_positions(self) -> Dict[str, Any]:
         """
         Audits actual broker net positions against OrderManager.open_positions:
-        1. Adopts unmanaged positions (crash-restart recovery).
-        2. Dispatches RiskAlertEvents on unexpected quantity or directional mismatches.
+        1. Syncs broker orders to catch OCO exit leg fills.
+        2. Adopts unmanaged positions (crash-restart recovery).
+        3. Dispatches RiskAlertEvents on unexpected quantity or directional mismatches.
         """
         if self.order_manager is None:
             return {"status": "skipped", "reason": "No OrderManager attached"}
 
+        mode_val = getattr(self.trading_mode, "value", str(self.trading_mode))
+        if mode_val != TradingMode.LIVE.value:
+            # Never reconcile live Zerodha positions during PAPER / REPLAY mode (prevents ghost-closing simulated trades)
+            return {
+                "status": "skipped",
+                "mode": mode_val,
+                "reason": f"Live Kite position reconciliation disabled in {mode_val} mode",
+                "open_paper_positions": len(self.order_manager.open_positions),
+            }
+
         if self.kite is None:
             return {"status": "skipped", "reason": "No Kite client attached"}
+
+        if self.token_expired:
+            return {"status": "halted", "reason": "Token expired — re-login required"}
 
         # Quiet Pre-Login Reconciler: verify Redis key holds today's IST date before querying Kite API
         try:
             import redis
             from config.settings import settings
-            from shared.constants import KEY_KITE_TOKEN, IST_TZ
+            from shared.constants import KEY_KITE_TOKEN
             r = redis.from_url(
                 settings.redis_url,
                 decode_responses=True,
@@ -338,23 +646,26 @@ class KiteBroker:
                     logger.debug(f"[RECONCILER] Token date {tok_data.get('date')} != today {today_iso}. Skipping reconciliation.")
                     return {"status": "skipped", "reason": "Token not authorized for today"}
             else:
-                # If Redis is reachable but token is absent, check if real KiteConnect client
                 if type(self.kite).__name__ == "KiteConnect":
                     logger.debug(f"[RECONCILER] No token in Redis key {KEY_KITE_TOKEN} for today. Skipping reconciliation.")
                     return {"status": "skipped", "reason": "No token pushed for today"}
         except Exception:
-            # Redis unavailable or bypassed in unit tests
             pass
 
+        # Sync orderbook first to process any live SL/Target fills cleanly
+        await self._sync_broker_orders()
+
         try:
-            broker_pos_data = self.kite.positions()
+            broker_pos_data = self._call_kite_rest(self.kite.positions, max_network_retries=1)
             net_positions = broker_pos_data.get("net", [])
+        except KiteTokenExpiredError:
+            return {"status": "skipped", "reason": "Token unauthorized"}
         except Exception as e:
-            err_str = str(e)
-            if "Incorrect api_key or access_token" in err_str or "TokenException" in type(e).__name__:
+            kind = _classify_kite_exception(e)
+            if kind == "TokenException":
                 logger.debug(f"[RECONCILER] Kite session not authorized yet: {e}")
                 return {"status": "skipped", "reason": "Token unauthorized"}
-            logger.error(f"[RECONCILER] Error fetching broker positions: {e}")
+            logger.error(f"[RECONCILER] Error fetching broker positions ({kind}): {e}")
             return {"status": "error", "error": str(e)}
 
         broker_active: Dict[str, Dict[str, Any]] = {}
@@ -387,6 +698,7 @@ class KiteBroker:
                     realized_pnl=0.0,
                     stop_loss=round(avg_price * (0.99 if side == Side.BUY else 1.01), 2),
                     target_price=round(avg_price * (1.02 if side == Side.BUY else 0.98), 2),
+                    entry_time=datetime.now(IST_TZ),
                 )
                 internal_positions[sym] = pos
                 if self.order_manager.risk_gatekeeper is not None:
@@ -401,7 +713,6 @@ class KiteBroker:
                 )
 
             else:
-                # 2. Check quantity mismatch
                 int_pos = internal_positions[sym]
                 if int_pos.quantity != abs_qty:
                     mismatch_msg = (
@@ -428,9 +739,12 @@ class KiteBroker:
         return {"status": "ok", "active_broker_positions": len(broker_active)}
 
     async def _reconciler_loop(self) -> None:
-        """Continuous background task running position reconciliation every 5 seconds."""
+        """Continuous background task running position reconciliation every 5 seconds; halts immediately on TokenException."""
         logger.info(f"Started state reconciler loop (Interval: {self.reconciler_interval_sec}s)")
         while self._is_running:
+            if self.token_expired:
+                logger.warning("[RECONCILER LOOP] Halting reconciler loop due to TokenException.")
+                break
             try:
                 await self.reconcile_positions()
             except Exception as e:
@@ -442,11 +756,10 @@ class KiteBroker:
     # -------------------------------------------------------------------------
 
     async def start(self) -> None:
-        """Starts ticker connection and background reconciliation loop."""
+        """Starts single KiteTicker connection and background reconciliation loop."""
         self._is_running = True
         self._loop = asyncio.get_running_loop()
 
-        # Auto-instantiate KiteTicker if self.ticker is None and credentials available
         if self.ticker is None and self.kite is not None:
             api_key = getattr(self.kite, "api_key", None)
             access_token = getattr(self.kite, "access_token", None)
@@ -459,13 +772,18 @@ class KiteBroker:
             if api_key and access_token:
                 try:
                     from kiteconnect import KiteTicker
-                    self.ticker = KiteTicker(api_key=api_key, access_token=access_token)
+                    self.ticker = KiteTicker(
+                        api_key=api_key,
+                        access_token=access_token,
+                        reconnect=True,
+                        reconnect_max_tries=50,
+                        reconnect_max_delay=60,
+                    )
                     self._setup_ticker_callbacks()
-                    logger.info("[KITE BROKER] Auto-instantiated KiteTicker in start().")
+                    logger.info("[KITE BROKER] Auto-instantiated single-WS KiteTicker with exponential backoff.")
                 except Exception as e:
                     logger.error(f"[KITE BROKER] Failed to auto-instantiate KiteTicker: {e}")
 
-        # Start ticker in background thread if available
         if self.ticker is not None:
             try:
                 self.ticker.connect(threaded=True)
@@ -474,7 +792,6 @@ class KiteBroker:
             except Exception as e:
                 logger.error(f"[KITE TICKER] Failed to connect KiteTicker: {e}")
 
-        # Start reconciler loop
         self._reconciler_task = asyncio.create_task(self._reconciler_loop())
 
     def subscribe_tokens(self, tokens: List[int]) -> None:
@@ -491,6 +808,8 @@ class KiteBroker:
     async def stop(self) -> None:
         """Stops reconciler task and closes ticker connection."""
         self._is_running = False
+        self.ticker_connected = False
+        self.ticker_reconnecting = False
 
         if self._reconciler_task and not self._reconciler_task.done():
             self._reconciler_task.cancel()

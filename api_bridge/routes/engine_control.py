@@ -15,6 +15,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from loguru import logger
 
@@ -22,7 +23,7 @@ from config.settings import settings
 from api_bridge.ws.telemetry_manager import telemetry_manager
 from research_lab.data_loader.synthetic_generator import DATA_STORE_DIR, FALLBACK_DATA_STORE_DIR, SyntheticDataGenerator
 from shared.constants import DEFAULT_REPLAY_BASKET, IST_TZ
-from shared.enums import TradingMode
+from shared.enums import Timeframe, TradingMode
 from trading_engine.core.engine import TrillionaireEngine
 from trading_engine.data.tick_replayer import HistoricalTickReplayer
 
@@ -116,12 +117,17 @@ async def get_engine_status(engine: TrillionaireEngine = Depends(get_engine)) ->
         "trading_paused": st.get("trading_paused", False),
         "capital_tier": st["capital_tier"],
         "allocated_capital": st["allocated_capital"],
+        "paper_balance": st.get("paper_balance", st["allocated_capital"] + st["daily_realized_pnl"]),
+        "risk_per_trade_pct": st.get("risk_per_trade_pct", engine.risk_gatekeeper.risk_per_trade_pct),
         "daily_mtm": st["daily_total_mtm"],
         "realized_pnl": st["daily_realized_pnl"],
         "unrealized_pnl": round(unrealized, 2),
         "circuit_breaker_tripped": st["kill_switch_active"],
         "profit_floor_armed": st["profit_lock_armed"],
+        "token_expired": st.get("token_expired", False),
+        "ticker_reconnecting": st.get("ticker_reconnecting", False),
         "open_positions_count": st["open_positions_count"],
+        "closed_trades_count": st.get("closed_trades_count", len(engine.order_manager.closed_trades)),
         "active_stocks_count": len(engine.strategy_runner.profiles),
         "milestones": st.get("milestones", engine.get_lifecycle_milestones()),
         "funnel_metrics": st.get("funnel_metrics", {
@@ -148,7 +154,7 @@ async def get_sentinel_summary(engine: TrillionaireEngine = Depends(get_engine))
 
 @router.get("/positions")
 async def get_active_positions(engine: TrillionaireEngine = Depends(get_engine)) -> List[Dict[str, Any]]:
-    """Returns active intraday positions with entry prices, LTP, and unrealized PnL."""
+    """Returns active intraday positions with entry prices, SL/Target, LTP, and unrealized PnL."""
     return [
         pos.model_dump(mode="json")
         for pos in engine.order_manager.open_positions.values()
@@ -162,6 +168,89 @@ async def get_session_orders(engine: TrillionaireEngine = Depends(get_engine)) -
         order.model_dump(mode="json")
         for order in engine.order_manager.orders.values()
     ]
+
+
+@router.get("/closed-trades")
+async def get_closed_trades(engine: TrillionaireEngine = Depends(get_engine)) -> List[Dict[str, Any]]:
+    """Returns immutable closed round-trip trades ledger for the current IST session."""
+    return [
+        trade.model_dump(mode="json")
+        for trade in engine.order_manager.closed_trades
+    ]
+
+
+@router.get("/candles/{symbol}")
+async def get_symbol_candles(
+    symbol: str,
+    timeframe: str = Query("M5", description="Candle timeframe: M1, M3, M5, or M15"),
+    limit: int = Query(150, ge=10, le=300),
+    engine: TrillionaireEngine = Depends(get_engine),
+) -> List[Dict[str, Any]]:
+    """Returns historical + live intraday candles with VWAP and EMA(200) for chart switching."""
+    tf_map = {
+        "M1": Timeframe.M1,
+        "1M": Timeframe.M1,
+        "M3": Timeframe.M3,
+        "3M": Timeframe.M3,
+        "M5": Timeframe.M5,
+        "5M": Timeframe.M5,
+        "M15": Timeframe.M15,
+        "15M": Timeframe.M15,
+    }
+    tf = tf_map.get(timeframe.upper(), Timeframe.M5)
+    kite_client = getattr(engine.broker, "kite", None)
+    bars = engine.candle_aggregator.get_candles_for_symbol(
+        symbol=symbol.upper(),
+        timeframe=tf,
+        limit=limit,
+        kite_client=kite_client,
+        instrument_sync=engine.instrument_sync,
+    )
+    return [b.model_dump(mode="json") for b in bars]
+
+
+@router.get("/stream")
+async def sse_telemetry_stream(engine: TrillionaireEngine = Depends(get_engine)):
+    """Server-Sent Events fallback stream with buffering disabled."""
+    import json as _json
+
+    telemetry_manager.set_engine(engine)
+
+    async def _event_gen():
+        while True:
+            snap = telemetry_manager.build_snapshot()
+            yield f"data: {_json.dumps(snap)}\n\n"
+            await asyncio.sleep(1.0)
+
+    return StreamingResponse(
+        _event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post("/sentinel/{symbol}/override", dependencies=[Depends(verify_admin_api_key)])
+async def override_sentinel_symbol(
+    symbol: str,
+    reason: str = Query("Manual operator override: Sentinel lock cleared", description="Override reason"),
+    engine: TrillionaireEngine = Depends(get_engine),
+) -> Dict[str, Any]:
+    """Manually unlocks a Sentinel DO_NOT_TRADE / LOCK badge for the current session."""
+    clean_sym = symbol.upper()
+    tag = engine.sentinel.override_symbol_lock(clean_sym, reason=reason)
+    try:
+        await telemetry_manager.broadcast_snapshot()
+    except Exception:
+        pass
+    return {
+        "status": "unlocked",
+        "symbol": clean_sym,
+        "sentinel": tag.model_dump(mode="json"),
+    }
 
 
 @router.get("/profiles")

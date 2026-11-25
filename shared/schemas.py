@@ -166,7 +166,12 @@ class Order(StrictBaseModel):
     trigger_price: Optional[float] = Field(default=None, gt=0, description="Trigger price for stop loss limit")
     average_fill_price: Optional[float] = Field(default=None, ge=0, description="Volume-weighted execution price")
     status: OrderStatus = Field(default=OrderStatus.PENDING_NEW, description="Lifecycle order status")
-    exit_reason: Optional[str] = Field(default=None, description="Trade exit reason (TP_HIT, SL_HIT, 1R_BREAKEVEN, TIME_EXIT, etc.)")
+    exit_reason: Optional[str] = Field(default=None, description="Trade exit reason (TARGET_HIT, SL_HIT, FLATTEN_ALL, MANUAL_EXIT, EOD_SQUARE_OFF)")
+    rejection_reason: Optional[str] = Field(default=None, description="Rejection reason from broker or sanity guard")
+    sl_price: Optional[float] = Field(default=None, gt=0, description="Planned stop loss level")
+    target_price: Optional[float] = Field(default=None, gt=0, description="Planned target level")
+    is_exit: bool = Field(default=False, description="Whether order is an exit leg")
+    client_order_tag: Optional[str] = Field(default=None, description="Unique client idempotency tag")
     created_at_ist: datetime = Field(..., description="Creation timestamp in IST")
 
     @field_validator("created_at_ist", mode="before")
@@ -189,3 +194,38 @@ class Position(StrictBaseModel):
     realized_pnl: float = Field(default=0.0, description="Closed / realized PnL in INR")
     stop_loss: float = Field(..., gt=0, description="Active trailing or hard stop loss price")
     target_price: float = Field(..., gt=0, description="Active profit target price")
+    entry_time: Optional[datetime] = Field(default=None, description="Entry execution timestamp in IST")
+    entry_order_id: Optional[str] = Field(default=None, description="Entry order ID")
+    sl_order_id: Optional[str] = Field(default=None, description="Paired OCO SL exit order ID")
+    tp_order_id: Optional[str] = Field(default=None, description="Paired OCO Target exit order ID")
+
+    @field_validator("entry_time", mode="before")
+    @classmethod
+    def validate_entry_time(cls, v: datetime | str | None) -> datetime | None:
+        return _ensure_ist_datetime(v)
+
+
+class ClosedTrade(StrictBaseModel):
+    """Immutable executed round-trip trade record persisted to daily ledger."""
+    order_id: str = Field(..., description="Exit order ID for this closed trade")
+    symbol: str = Field(..., description="NSE Trading symbol")
+    product: str = Field(default="MIS", description="Product code (MIS)")
+    side: Side = Field(..., description="Original entry side (BUY or SELL)")
+    filled_qty: int = Field(..., gt=0, description="Executed exit quantity")
+    entry_price: float = Field(..., gt=0, description="Average entry price")
+    sl_price: float = Field(..., gt=0, description="Stop loss price")
+    target_price: float = Field(..., gt=0, description="Target price")
+    actual_exit_price: float = Field(..., gt=0, description="Actual exit execution price")
+    realized_pnl: float = Field(..., description="Net realized PnL in INR")
+    pnl_pct: float = Field(..., description="Return percentage")
+    exit_reason: str = Field(..., description="TARGET_HIT, SL_HIT, FLATTEN_ALL, MANUAL_EXIT, or EOD_SQUARE_OFF")
+    entry_time: datetime = Field(..., description="Entry execution timestamp in IST")
+    exit_time: datetime = Field(..., description="Exit execution timestamp in IST")
+
+    @field_validator("entry_time", "exit_time", mode="before")
+    @classmethod
+    def validate_ist_timestamps(cls, v: datetime | str) -> datetime:
+        dt = _ensure_ist_datetime(v)
+        if dt is None:
+            raise ValueError("entry_time and exit_time are required")
+        return dt

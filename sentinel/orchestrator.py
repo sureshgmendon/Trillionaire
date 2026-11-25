@@ -330,6 +330,26 @@ class SentinelOrchestrator:
             updated_at_ist=datetime.now(IST_TZ),
         )
 
+    def override_symbol_lock(
+        self,
+        tradingsymbol: str,
+        reason: str = "Manual operator override: Sentinel lock cleared for session",
+    ) -> NewsSentinelTag:
+        """Overrides DO_NOT_TRADE / CAUTION tag for a symbol back to NORMAL (1.0x)."""
+        now_dt = datetime.now(IST_TZ)
+        tag = NewsSentinelTag(
+            tradingsymbol=tradingsymbol,
+            status=SentinelStatus.NORMAL,
+            reason=reason,
+            risk_multiplier=1.0,
+            updated_at_ist=now_dt,
+        )
+        self._cached_tags[tradingsymbol] = tag
+        self._save_manifest(self._cached_tags, now_dt.date())
+        self._cache_in_redis(self._cached_tags)
+        logger.warning(f"[SENTINEL OVERRIDE] {tradingsymbol} unlocked manually -> NORMAL (1.0x)")
+        return tag
+
     def load_latest_manifest(self) -> bool:
         """Loads sentinel tags from daily_sentinel_tags.json if present."""
         if not self.artifacts_path.exists():

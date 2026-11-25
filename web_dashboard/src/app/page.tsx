@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import { TopTelemetryBar } from "@/components/TopTelemetryBar";
 import { InteractiveChartPanel } from "@/components/InteractiveChartPanel";
 import { WatchlistAndSentinelMatrix } from "@/components/WatchlistAndSentinelMatrix";
@@ -9,6 +9,7 @@ import { ReplayControlModal } from "@/components/ReplayControlModal";
 import { SettingsControlModal } from "@/components/SettingsControlModal";
 import { NewsMarquee } from "@/components/NewsMarquee";
 import { useTrillionaireStream } from "@/hooks/useTrillionaireStream";
+import { SentinelHeadline } from "@/types/telemetry";
 
 export default function CockpitPage() {
   const {
@@ -19,14 +20,18 @@ export default function CockpitPage() {
     signals,
     orders,
     positions,
+    closedTrades,
     anomalies,
     riskAlerts,
     profiles,
     sentinelSummary,
     selectedSymbol,
     setSelectedSymbol,
+    selectedTimeframe,
+    setSelectedTimeframe,
     exitPosition,
     triggerEmergencyFlatten,
+    overrideSentinelLock,
     triggerReplay,
     startEngine,
     stopEngine,
@@ -40,8 +45,26 @@ export default function CockpitPage() {
   const [settingsTab, setSettingsTab] = useState<"execution" | "broker" | "alerts">("execution");
 
   const selectedProfile = profiles.find((p) => p.tradingsymbol === selectedSymbol);
-  const selectedCandles = candles[selectedSymbol] || [];
+  const selectedCandles = candles[`${selectedSymbol}_${selectedTimeframe}`] || [];
   const selectedTick = ticks[selectedSymbol];
+
+  // Surface live operational alerts (token expiry, order rejections, circuit breakers) into Sentinel Newswire
+  const mergedHeadlines: SentinelHeadline[] = useMemo(() => {
+    const alertItems: SentinelHeadline[] = riskAlerts.slice(0, 5).map((alert) => ({
+      title: `[${alert.level}] ${alert.symbol}: ${alert.message}`,
+      summary: alert.message,
+      source: "Risk Desk",
+      time: new Date(alert.timestamp_ist).toLocaleTimeString("en-IN", {
+        timeZone: "Asia/Kolkata",
+        hour12: false,
+        hour: "2-digit",
+        minute: "2-digit",
+      }) + " IST",
+      category: "SYSTEM_ALERT",
+    }));
+    const newsItems = sentinelSummary?.headlines || [];
+    return [...alertItems, ...newsItems];
+  }, [riskAlerts, sentinelSummary?.headlines]);
 
   return (
     <div className="min-h-screen flex flex-col bg-cockpit-bg text-cockpit-text font-mono">
@@ -51,6 +74,7 @@ export default function CockpitPage() {
         status={status}
         ticks={ticks}
         positions={positions}
+        closedTrades={closedTrades}
         onEmergencyFlatten={triggerEmergencyFlatten}
         onOpenReplayModal={() => setIsReplayModalOpen(true)}
         onOpenSettingsModal={(tab) => {
@@ -66,8 +90,8 @@ export default function CockpitPage() {
         onRefresh={refreshState}
       />
 
-      {/* 2. Scrolling Token-Free News Marquee */}
-      <NewsMarquee headlines={sentinelSummary?.headlines} />
+      {/* 2. Scrolling Token-Free News & Alert Marquee */}
+      <NewsMarquee headlines={mergedHeadlines} />
 
       {/* 3. Main High-Density Cockpit Grid */}
       <main className="flex-1 p-3 grid grid-cols-1 xl:grid-cols-12 gap-3 overflow-hidden">
@@ -78,6 +102,7 @@ export default function CockpitPage() {
             ticks={ticks}
             selectedSymbol={selectedSymbol}
             onSelectSymbol={setSelectedSymbol}
+            onOverrideLock={overrideSentinelLock}
           />
         </div>
 
@@ -91,14 +116,19 @@ export default function CockpitPage() {
               candles={selectedCandles}
               tick={selectedTick}
               orders={orders}
+              positions={positions}
+              closedTrades={closedTrades}
+              timeframe={selectedTimeframe}
+              onTimeframeChange={setSelectedTimeframe}
             />
           </div>
 
-          {/* Bottom Half: Positions, Order Book & Telemetry Stream Tabs */}
+          {/* Bottom Half: Positions, Order Book & Immutable Report Tabs */}
           <div className="h-[280px]">
             <PositionsAndOrdersTabs
               positions={positions}
               orders={orders}
+              closedTrades={closedTrades}
               ticks={ticks}
               onExitPosition={exitPosition}
               signals={signals}
@@ -124,6 +154,7 @@ export default function CockpitPage() {
         initialTab={settingsTab}
         milestones={status?.milestones}
         sentinelSummary={sentinelSummary}
+        tokenExpired={Boolean(status?.token_expired)}
       />
     </div>
   );

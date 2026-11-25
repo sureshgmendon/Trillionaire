@@ -94,12 +94,14 @@ def test_enums_integrity():
     assert set(OrderStatus) == {
         OrderStatus.PENDING_NEW,
         OrderStatus.OPEN,
+        OrderStatus.TRIGGER_PENDING,
         OrderStatus.PARTIALLY_FILLED,
         OrderStatus.FILLED,
         OrderStatus.CANCELLED,
         OrderStatus.REJECTED,
     }
     assert Timeframe.M1.minutes == 1
+    assert Timeframe.M3.minutes == 3
     assert Timeframe.M5.minutes == 5
     assert Timeframe.M15.minutes == 15
 

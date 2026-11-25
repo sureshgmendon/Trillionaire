@@ -35,6 +35,7 @@ interface SettingsControlModalProps {
   initialTab?: "execution" | "broker" | "alerts";
   milestones?: PipelineMilestones | null;
   sentinelSummary?: SentinelSummary | null;
+  tokenExpired?: boolean;
 }
 
 export const SettingsControlModal: React.FC<SettingsControlModalProps> = ({
@@ -44,6 +45,7 @@ export const SettingsControlModal: React.FC<SettingsControlModalProps> = ({
   initialTab,
   milestones,
   sentinelSummary,
+  tokenExpired = false,
 }) => {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -54,6 +56,8 @@ export const SettingsControlModal: React.FC<SettingsControlModalProps> = ({
   const [tradingMode, setTradingMode] = useState<TradingMode>("PAPER");
   const [dataFeeder, setDataFeeder] = useState<DataFeederType>("ZERODHA_KITE");
   const [capitalTier, setCapitalTier] = useState<string>("TIER_0_PAPER");
+  const [allocatedCapital, setAllocatedCapital] = useState<string>("100000");
+  const [riskPerTradePct, setRiskPerTradePct] = useState<string>("0.5");
   const [kiteApiKey, setKiteApiKey] = useState("");
   const [kiteApiSecret, setKiteApiSecret] = useState("");
   const [kiteUserId, setKiteUserId] = useState("");
@@ -91,6 +95,8 @@ export const SettingsControlModal: React.FC<SettingsControlModalProps> = ({
           setTradingMode(data.trading_mode);
           setDataFeeder("ZERODHA_KITE");
           setCapitalTier(data.active_capital_tier);
+          setAllocatedCapital(String(data.allocated_capital ?? 100000));
+          setRiskPerTradePct(String(data.risk_per_trade_pct ?? 0.5));
           setKiteUserId(data.kite_user_id || "");
         } else {
           setToastMsg({ type: "error", text: "Failed to load settings from engine API" });
@@ -121,6 +127,15 @@ export const SettingsControlModal: React.FC<SettingsControlModalProps> = ({
       data_feeder: dataFeeder,
       active_capital_tier: capitalTier,
     };
+
+    const parsedCapital = parseFloat(allocatedCapital);
+    if (!Number.isNaN(parsedCapital) && parsedCapital > 0) {
+      payload.allocated_capital = parsedCapital;
+    }
+    const parsedRiskPct = parseFloat(riskPerTradePct);
+    if (!Number.isNaN(parsedRiskPct) && parsedRiskPct > 0) {
+      payload.risk_per_trade_pct = parsedRiskPct;
+    }
 
     if (kiteApiKey.trim()) payload.kite_api_key = kiteApiKey.trim();
     if (kiteApiSecret.trim()) payload.kite_api_secret = kiteApiSecret.trim();
@@ -319,6 +334,37 @@ export const SettingsControlModal: React.FC<SettingsControlModalProps> = ({
                         </button>
                       ))}
                     </div>
+
+                    {/* Allocated Capital & Risk-per-Trade Persistence */}
+                    <div className="grid grid-cols-2 gap-3 mt-3">
+                      <div className="bg-cockpit-surface border border-cockpit-border rounded-lg p-3">
+                        <label className="block text-[10px] font-bold text-cockpit-muted uppercase mb-1">
+                          Allocated Capital (₹)
+                        </label>
+                        <input
+                          type="number"
+                          min="1000"
+                          step="1000"
+                          value={allocatedCapital}
+                          onChange={(e) => setAllocatedCapital(e.target.value)}
+                          className="w-full px-2.5 py-1.5 rounded bg-cockpit-bg border border-cockpit-border text-white text-xs font-mono focus:outline-none focus:border-cockpit-blue"
+                        />
+                      </div>
+                      <div className="bg-cockpit-surface border border-cockpit-border rounded-lg p-3">
+                        <label className="block text-[10px] font-bold text-cockpit-muted uppercase mb-1">
+                          Risk Per Trade (%)
+                        </label>
+                        <input
+                          type="number"
+                          min="0.05"
+                          max="5.0"
+                          step="0.05"
+                          value={riskPerTradePct}
+                          onChange={(e) => setRiskPerTradePct(e.target.value)}
+                          className="w-full px-2.5 py-1.5 rounded bg-cockpit-bg border border-cockpit-border text-white text-xs font-mono focus:outline-none focus:border-cockpit-blue"
+                        />
+                      </div>
+                    </div>
                   </div>
                 </div>
               )}
@@ -357,23 +403,47 @@ export const SettingsControlModal: React.FC<SettingsControlModalProps> = ({
                   
 
         {/* 1-Click Browser OAuth Login */}
-        <div className="p-3.5 rounded-lg bg-gradient-to-r from-cyan-950/40 via-blue-950/30 to-slate-900/60 border border-cyan-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
+        <div
+          className={`p-3.5 rounded-lg border flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3 ${
+            tokenExpired || currentSettings?.token_expired
+              ? "bg-rose-950/50 border-rose-500/70 shadow-lg shadow-rose-500/15"
+              : "bg-gradient-to-r from-cyan-950/40 via-blue-950/30 to-slate-900/60 border-cyan-500/30"
+          }`}
+        >
           <div>
-            <div className="flex items-center gap-1.5 text-xs font-semibold text-cyan-300">
-              <Key className="h-3.5 w-3.5 text-cyan-400" />
-              <span>1-Click Zerodha Kite Connect OAuth Login</span>
+            <div
+              className={`flex items-center gap-1.5 text-xs font-semibold ${
+                tokenExpired || currentSettings?.token_expired ? "text-rose-300" : "text-cyan-300"
+              }`}
+            >
+              <Key
+                className={`h-3.5 w-3.5 ${
+                  tokenExpired || currentSettings?.token_expired ? "text-rose-400 animate-pulse" : "text-cyan-400"
+                }`}
+              />
+              <span>
+                {tokenExpired || currentSettings?.token_expired
+                  ? "TOKEN EXPIRED — 1-Click Zerodha Re-Login Required"
+                  : "1-Click Zerodha Kite Connect OAuth Login"}
+              </span>
             </div>
             <div className="text-[11px] text-slate-300 mt-0.5">
-              Instantly authenticate your live Kite session in your browser. Auto-exchanges token and arms Zerodha streaming.
+              {tokenExpired || currentSettings?.token_expired
+                ? "Your Kite access token expired or was invalidated (TokenException/403). Click Re-Login to resume live orders and WebSocket ticks."
+                : "Instantly authenticate your live Kite session in your browser. Auto-exchanges token and arms Zerodha streaming."}
             </div>
           </div>
           <a
             href={`${apiUrl}/api/v1/kite/login`}
             target="_blank"
             rel="noopener noreferrer"
-            className="flex-shrink-0 inline-flex items-center justify-center space-x-1.5 px-3 py-1.5 rounded bg-cyan-600 hover:bg-cyan-500 text-slate-950 text-xs font-bold transition shadow-sm"
+            className={`flex-shrink-0 inline-flex items-center justify-center space-x-1.5 px-3 py-1.5 rounded text-xs font-bold transition shadow-sm ${
+              tokenExpired || currentSettings?.token_expired
+                ? "bg-rose-500 hover:bg-rose-400 text-white animate-pulse"
+                : "bg-cyan-600 hover:bg-cyan-500 text-slate-950"
+            }`}
           >
-            <span>Login with Kite</span>
+            <span>{tokenExpired || currentSettings?.token_expired ? "Re-Login with Kite" : "Login with Kite"}</span>
             <ExternalLink className="h-3.5 w-3.5" />
           </a>
         </div>

@@ -53,6 +53,7 @@ class OrderStatus(str, Enum):
     """Lifecycle state of an order."""
     PENDING_NEW = "PENDING_NEW"
     OPEN = "OPEN"
+    TRIGGER_PENDING = "TRIGGER PENDING"
     PARTIALLY_FILLED = "PARTIALLY_FILLED"
     FILLED = "FILLED"
     CANCELLED = "CANCELLED"
@@ -62,6 +63,7 @@ class OrderStatus(str, Enum):
 class Timeframe(str, Enum):
     """Candlestick sampling intervals."""
     M1 = "M1"
+    M3 = "M3"
     M5 = "M5"
     M15 = "M15"
 
@@ -69,6 +71,7 @@ class Timeframe(str, Enum):
     def minutes(self) -> int:
         mapping = {
             "M1": 1,
+            "M3": 3,
             "M5": 5,
             "M15": 15,
         }

@@ -2,9 +2,11 @@
 Trillionaire API Bridge - Real-Time WebSocket Telemetry Broadcaster
 Maintains active browser WebSocket connections, subscribes to EventBus events,
 serializes telemetry into standardized JSON envelopes, and streams real-time updates:
-1. Concurrently broadcasts TICK, CANDLE, SIGNAL, ORDER, ANOMALY, and RISK envelopes.
-2. Automatically prunes dead/disconnected client sockets without blocking the engine.
-3. Maintains a rolling ring buffer of recent events and emits an instant SNAPSHOT upon connection.
+1. Concurrently broadcasts TICK, CANDLE, SIGNAL, ORDER, EXIT, ANOMALY, RISK, and SNAPSHOT envelopes.
+2. Automatically pushes full state snapshots on M5 scanner cycles and periodic 2s heartbeats
+   (funnel counters, open_positions, orders, closed_trades, MTM, sentinel statuses) so the UI updates
+   live with zero manual F5 refresh.
+3. Prunes dead/disconnected client sockets without blocking the engine.
 """
 
 import asyncio
@@ -16,6 +18,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from loguru import logger
 
 from shared.constants import IST_TZ
+from shared.enums import Timeframe
 from trading_engine.core.event_bus import (
     AnomalyAlertEvent,
     CandleCloseEvent,
@@ -29,7 +32,7 @@ from trading_engine.core.event_bus import (
 
 
 class TelemetryManager:
-    """Manages active WebSockets, buffers telemetry history, and streams live event feeds."""
+    """Manages active WebSockets, buffers telemetry history, and streams live state updates."""
 
     def __init__(
         self,
@@ -52,6 +55,10 @@ class TelemetryManager:
         self.latest_ticks: Dict[str, Dict[str, Any]] = {}
         self.latest_candles: Dict[str, Dict[str, Any]] = {}
 
+        # Debounce & periodic heartbeat state for automatic UI synchronization
+        self._snapshot_debounce_task: Optional[asyncio.Task] = None
+        self._heartbeat_task: Optional[asyncio.Task] = None
+
         # Wire EventBus subscribers
         self._register_subscribers()
 
@@ -72,10 +79,16 @@ class TelemetryManager:
         self.bus.subscribe(RiskAlertEvent, self.on_risk_event)
 
     async def connect(self, websocket: WebSocket) -> None:
-        """Accepts a new client connection, tracks it, and sends initial SNAPSHOT."""
+        """Accepts a new client connection, tracks it, starts periodic sync if needed, and sends initial SNAPSHOT."""
         await websocket.accept()
         self.active_connections.add(websocket)
         logger.info(f"[WS TELEMETRY] Client connected ({len(self.active_connections)} total active)")
+
+        if self._heartbeat_task is None or self._heartbeat_task.done():
+            try:
+                self._heartbeat_task = asyncio.create_task(self._periodic_state_loop())
+            except RuntimeError:
+                pass
 
         # Send instant hydration SNAPSHOT
         snapshot = self.build_snapshot()
@@ -90,20 +103,83 @@ class TelemetryManager:
         self.active_connections.discard(websocket)
         logger.info(f"[WS TELEMETRY] Client disconnected ({len(self.active_connections)} active)")
 
+    async def _periodic_state_loop(self) -> None:
+        """Broadcasts full state snapshots every 2 seconds while WebSocket clients are active."""
+        while self.active_connections:
+            await asyncio.sleep(2.0)
+            if self.active_connections and self.engine is not None:
+                try:
+                    await self.broadcast_snapshot()
+                except Exception as e:
+                    logger.debug(f"[WS HEARTBEAT] Broadcast error: {e}")
+
+    def _schedule_snapshot_broadcast(self) -> None:
+        """Debounces full state snapshot broadcast (~150ms) on scanner cycles and trade transitions."""
+        if not self.active_connections:
+            return
+        if self._snapshot_debounce_task and not self._snapshot_debounce_task.done():
+            return
+
+        async def _delayed():
+            await asyncio.sleep(0.15)
+            await self.broadcast_snapshot()
+
+        try:
+            self._snapshot_debounce_task = asyncio.create_task(_delayed())
+        except RuntimeError:
+            pass
+
     def build_snapshot(self) -> Dict[str, Any]:
-        """Constructs full session history hydration packet for new dashboard tabs."""
+        """Constructs full live state packet (status, funnel, positions, orders, closed_trades, sentinel, ticks)."""
         now_ist = datetime.now(IST_TZ).isoformat()
-        engine_status = self.engine.get_status() if self.engine is not None else {}
+        engine_status: Dict[str, Any] = {}
+        open_positions_list: List[Dict[str, Any]] = []
+        orders_list: List[Dict[str, Any]] = list(self.orders_buffer)
+        closed_trades_list: List[Dict[str, Any]] = []
+        sentinel_tags_dict: Dict[str, Any] = {}
+
+        if self.engine is not None:
+            st = self.engine.get_status()
+            engine_status = {
+                **st,
+                "mode": st.get("trading_mode", "PAPER"),
+                "realized_pnl": st.get("daily_realized_pnl", 0.0),
+                "unrealized_pnl": st.get("daily_unrealized_pnl", 0.0),
+                "daily_mtm": st.get("daily_total_mtm", 0.0),
+                "circuit_breaker_tripped": st.get("kill_switch_active", False),
+                "profit_floor_armed": st.get("profit_lock_armed", False),
+                "active_stocks_count": len(self.engine.strategy_runner.profiles),
+            }
+            open_positions_list = [
+                pos.model_dump(mode="json")
+                for pos in self.engine.order_manager.open_positions.values()
+            ]
+            if self.engine.order_manager.orders:
+                orders_list = [
+                    ord_obj.model_dump(mode="json")
+                    for ord_obj in list(self.engine.order_manager.orders.values())[-200:]
+                ]
+            closed_trades_list = [
+                ct.model_dump(mode="json")
+                for ct in self.engine.order_manager.closed_trades
+            ]
+            sentinel_tags_dict = {
+                sym: self.engine.sentinel.get_effective_risk_multiplier(sym).model_dump(mode="json")
+                for sym in self.engine.strategy_runner.profiles.keys()
+            }
 
         return {
             "type": "SNAPSHOT",
             "timestamp_ist": now_ist,
             "payload": {
                 "status": engine_status,
+                "open_positions": open_positions_list,
+                "recent_orders": orders_list,
+                "closed_trades": closed_trades_list,
+                "sentinel_tags": sentinel_tags_dict,
                 "latest_ticks": self.latest_ticks,
                 "latest_candles": self.latest_candles,
                 "recent_signals": list(self.signals_buffer),
-                "recent_orders": list(self.orders_buffer),
                 "recent_risk_alerts": list(self.risk_buffer),
                 "recent_anomalies": list(self.anomaly_buffer),
             },
@@ -123,7 +199,7 @@ class TelemetryManager:
             except (WebSocketDisconnect, RuntimeError, Exception):
                 dead_sockets.append(ws)
 
-        await asyncio.gather(*[_safe_send(ws) for ws in self.active_connections], return_exceptions=True)
+        await asyncio.gather(*[_safe_send(ws) for ws in list(self.active_connections)], return_exceptions=True)
 
         # Prune dead sockets
         for dead_ws in dead_sockets:
@@ -152,7 +228,7 @@ class TelemetryManager:
         await self.broadcast(envelope)
 
     async def on_candle_event(self, event: CandleCloseEvent) -> None:
-        """Handles CandleCloseEvent: updates candle cache and broadcasts CANDLE envelope."""
+        """Handles CandleCloseEvent: updates candle cache, broadcasts CANDLE, and triggers scanner state sync."""
         candle = event.candle
         candle_dict = candle.model_dump(mode="json")
         key = f"{candle.tradingsymbol}_{candle.timeframe.value}"
@@ -165,8 +241,11 @@ class TelemetryManager:
         }
         await self.broadcast(envelope)
 
+        if candle.timeframe == Timeframe.M5:
+            self._schedule_snapshot_broadcast()
+
     async def on_signal_event(self, event: SignalEvent) -> None:
-        """Handles SignalEvent: appends to ring buffer and broadcasts SIGNAL envelope."""
+        """Handles SignalEvent: appends to ring buffer, broadcasts SIGNAL, and schedules SNAPSHOT."""
         signal = event.signal
         sig_dict = signal.model_dump(mode="json")
         self.signals_buffer.append(sig_dict)
@@ -177,9 +256,10 @@ class TelemetryManager:
             "payload": sig_dict,
         }
         await self.broadcast(envelope)
+        self._schedule_snapshot_broadcast()
 
     async def on_order_event(self, event: OrderUpdateEvent) -> None:
-        """Handles OrderUpdateEvent: appends to ring buffer and broadcasts ORDER envelope."""
+        """Handles OrderUpdateEvent: appends to ring buffer and broadcasts ORDER / EXIT + full state sync."""
         order = event.order
         order_dict = order.model_dump(mode="json")
         self.orders_buffer.append(order_dict)
@@ -191,14 +271,15 @@ class TelemetryManager:
         }
         await self.broadcast(envelope)
 
-        # Broadcast EXIT event if order is an exit execution
-        if getattr(order, "exit_reason", None) or (getattr(order.status, "value", str(order.status)) in ("FILLED", "COMPLETE") and getattr(order, "is_exit", False)):
+        if getattr(order, "exit_reason", None) or getattr(order, "is_exit", False):
             exit_envelope = {
                 "type": "EXIT",
                 "timestamp_ist": order.created_at_ist.isoformat(),
                 "payload": order_dict,
             }
             await self.broadcast(exit_envelope)
+
+        self._schedule_snapshot_broadcast()
 
     async def on_anomaly_event(self, event: AnomalyAlertEvent) -> None:
         """Handles AnomalyAlertEvent: appends to buffer and broadcasts ANOMALY envelope."""
@@ -219,7 +300,7 @@ class TelemetryManager:
         await self.broadcast(envelope)
 
     async def on_risk_event(self, event: RiskAlertEvent) -> None:
-        """Handles RiskAlertEvent: appends to buffer and broadcasts RISK envelope."""
+        """Handles RiskAlertEvent: appends to buffer and broadcasts RISK envelope + snapshot."""
         risk_dict = {
             "symbol": event.symbol,
             "level": event.level,
@@ -234,6 +315,7 @@ class TelemetryManager:
             "payload": risk_dict,
         }
         await self.broadcast(envelope)
+        self._schedule_snapshot_broadcast()
 
 
 # Singleton broadcaster instance

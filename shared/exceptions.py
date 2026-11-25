@@ -64,6 +64,11 @@ class BrokerConnectionError(TrillionaireBaseException):
     pass
 
 
+class KiteTokenExpiredError(BrokerConnectionError):
+    """Raised when Kite daily access token is expired or unauthorized (TokenException / 403)."""
+    pass
+
+
 class DataFeedError(TrillionaireBaseException):
     """Raised when market data is stale, corrupted, or missing."""
     pass

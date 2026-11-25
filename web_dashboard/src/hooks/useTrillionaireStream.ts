@@ -1,7 +1,7 @@
 /**
  * Trillionaire Cockpit - WebSocket Stream & Telemetry State Hook
  * Manages WebSocket lifecycle, auto-reconnection with exponential backoff,
- * initial REST hydration, and real-time event updates.
+ * initial REST hydration, dynamic symbol/timeframe candle loading, and real-time state sync.
  */
 
 "use client";
@@ -10,6 +10,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import {
   AnomalyAlert,
   Candle,
+  ClosedTrade,
   EngineStatus,
   Order,
   Position,
@@ -19,12 +20,12 @@ import {
   StockProfile,
   TelemetryEnvelope,
   Tick,
+  TimeframeCode,
 } from "@/types/telemetry";
 
 export function getApiBaseUrl(): string {
   const envUrl = process.env.NEXT_PUBLIC_API_URL;
   if (typeof window !== "undefined") {
-    // If browser cockpit is loaded over HTTPS, prevent mixed content blocking
     if (window.location.protocol === "https:") {
       if (!envUrl || envUrl.startsWith("http://32.236.106.39") || envUrl.startsWith("http://")) {
         return window.location.origin;
@@ -43,7 +44,6 @@ export function getWsBaseUrl(): string {
   if (typeof window !== "undefined") {
     const isHttps = window.location.protocol === "https:";
     const wsProto = isHttps ? "wss:" : "ws:";
-    // If browser cockpit is loaded over HTTPS, enforce secure WSS WebSocket stream
     if (isHttps) {
       if (!envWs || envWs.startsWith("ws://32.236.106.39") || envWs.startsWith("ws://")) {
         return `wss://${window.location.host}/ws/stream`;
@@ -69,11 +69,13 @@ export function useTrillionaireStream() {
   const [signals, setSignals] = useState<Signal[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [positions, setPositions] = useState<Position[]>([]);
+  const [closedTrades, setClosedTrades] = useState<ClosedTrade[]>([]);
   const [anomalies, setAnomalies] = useState<AnomalyAlert[]>([]);
   const [riskAlerts, setRiskAlerts] = useState<RiskAlert[]>([]);
   const [profiles, setProfiles] = useState<StockProfile[]>([]);
   const [sentinelSummary, setSentinelSummary] = useState<SentinelSummary | null>(null);
   const [selectedSymbol, setSelectedSymbol] = useState<string>("RELIANCE");
+  const [selectedTimeframe, setSelectedTimeframe] = useState<TimeframeCode>("M5");
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAttemptsRef = useRef<number>(0);
@@ -83,10 +85,11 @@ export function useTrillionaireStream() {
   const fetchInitialState = useCallback(async () => {
     try {
       const apiBase = getApiBaseUrl();
-      const [statusRes, posRes, ordRes, sentinelRes, summaryRes] = await Promise.allSettled([
+      const [statusRes, posRes, ordRes, closedRes, sentinelRes, summaryRes] = await Promise.allSettled([
         fetch(`${apiBase}/api/v1/status`),
         fetch(`${apiBase}/api/v1/positions`),
         fetch(`${apiBase}/api/v1/orders`),
+        fetch(`${apiBase}/api/v1/closed-trades`),
         fetch(`${apiBase}/api/v1/sentinel`),
         fetch(`${apiBase}/api/v1/sentinel/summary`, {
           headers: {
@@ -107,6 +110,10 @@ export function useTrillionaireStream() {
         const o = await ordRes.value.json();
         setOrders(o);
       }
+      if (closedRes.status === "fulfilled" && closedRes.value.ok) {
+        const ct = await closedRes.value.json();
+        setClosedTrades(ct);
+      }
       if (sentinelRes.status === "fulfilled" && sentinelRes.value.ok) {
         const profs = await sentinelRes.value.json();
         setProfiles(profs);
@@ -122,6 +129,28 @@ export function useTrillionaireStream() {
       console.warn("[TELEMETRY REST] Initial fetch error:", err);
     }
   }, [selectedSymbol]);
+
+  // 1b. Dynamic Candle Loader when Symbol or Timeframe switches
+  const fetchCandlesForSymbol = useCallback(async (symbol: string, timeframe: TimeframeCode) => {
+    if (!symbol) return;
+    try {
+      const apiBase = getApiBaseUrl();
+      const res = await fetch(
+        `${apiBase}/api/v1/candles/${encodeURIComponent(symbol)}?timeframe=${timeframe}&limit=150`
+      );
+      if (res.ok) {
+        const bars: Candle[] = await res.json();
+        const key = `${symbol}_${timeframe}`;
+        setCandles((prev) => ({ ...prev, [key]: bars }));
+      }
+    } catch (e) {
+      console.debug("[CANDLES FETCH] Skipped:", e);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchCandlesForSymbol(selectedSymbol, selectedTimeframe);
+  }, [selectedSymbol, selectedTimeframe, fetchCandlesForSymbol]);
 
   // 2. WebSocket Connection Lifecycle
   const connectWebSocket = useCallback(() => {
@@ -180,12 +209,28 @@ export function useTrillionaireStream() {
     switch (envelope.type) {
       case "SNAPSHOT": {
         const { payload } = envelope;
-        if (payload.status) setStatus((prev) => ({ ...prev, ...payload.status } as EngineStatus));
-        if (payload.latest_ticks) setTicks(payload.latest_ticks);
+        if (payload.status) {
+          setStatus((prev) => ({ ...prev, ...payload.status } as EngineStatus));
+        }
+        if (payload.open_positions) {
+          setPositions(payload.open_positions);
+        }
+        if (payload.closed_trades) {
+          setClosedTrades(payload.closed_trades);
+        }
+        if (payload.latest_ticks && Object.keys(payload.latest_ticks).length > 0) {
+          setTicks((prev) => ({ ...prev, ...payload.latest_ticks }));
+        }
         if (payload.recent_signals) setSignals(payload.recent_signals);
         if (payload.recent_orders) setOrders(payload.recent_orders);
         if (payload.recent_risk_alerts) setRiskAlerts(payload.recent_risk_alerts);
         if (payload.recent_anomalies) setAnomalies(payload.recent_anomalies);
+        if (payload.sentinel_tags) {
+          const sTags = payload.sentinel_tags;
+          setProfiles((prev) =>
+            prev.map((p) => (sTags[p.tradingsymbol] ? { ...p, sentinel: sTags[p.tradingsymbol] } : p))
+          );
+        }
         break;
       }
       case "TICK": {
@@ -195,12 +240,12 @@ export function useTrillionaireStream() {
       }
       case "CANDLE": {
         const candle = envelope.payload;
-        const sym = candle.tradingsymbol;
+        const tf = (candle.timeframe || "M5") as TimeframeCode;
+        const key = `${candle.tradingsymbol}_${tf}`;
         setCandles((prev) => {
-          const existing = prev[sym] || [];
+          const existing = prev[key] || [];
           const updated = [...existing.filter((c) => c.timestamp_ist !== candle.timestamp_ist), candle];
-          // Keep last 150 candles
-          return { ...prev, [sym]: updated.slice(-150) };
+          return { ...prev, [key]: updated.slice(-200) };
         });
         break;
       }
@@ -217,14 +262,18 @@ export function useTrillionaireStream() {
           if (exists) {
             return prev.map((o) => (o.order_id === ord.order_id ? ord : o));
           }
-          return [ord, ...prev.slice(0, 99)];
+          return [ord, ...prev.slice(0, 199)];
         });
-        // Refetch positions and status on order fill or update
-        fetch(`${getApiBaseUrl()}/api/v1/positions`)
+        const apiBase = getApiBaseUrl();
+        fetch(`${apiBase}/api/v1/positions`)
           .then((r) => r.json())
           .then((p) => setPositions(p))
           .catch(() => {});
-        fetch(`${getApiBaseUrl()}/api/v1/status`)
+        fetch(`${apiBase}/api/v1/closed-trades`)
+          .then((r) => r.json())
+          .then((ct) => setClosedTrades(ct))
+          .catch(() => {});
+        fetch(`${apiBase}/api/v1/status`)
           .then((r) => r.json())
           .then((s) => {
             if (s) setStatus(s);
@@ -247,11 +296,12 @@ export function useTrillionaireStream() {
     }
   }, []);
 
-  // 4. Emergency Kill Switch Action
-  const triggerEmergencyFlatten = useCallback(async (reason: string = "UI_MANUAL_OVERRIDE") => {
+  // 4. Emergency Kill Switch / FLATTEN ALL Action
+  const triggerEmergencyFlatten = useCallback(async (reason: string = "FLATTEN_ALL") => {
     try {
+      const apiBase = getApiBaseUrl();
       const resp = await fetch(
-        `${getApiBaseUrl()}/api/v1/control/kill-switch?reason=${encodeURIComponent(reason)}`,
+        `${apiBase}/api/v1/control/kill-switch?reason=${encodeURIComponent(reason)}`,
         {
           method: "POST",
           headers: {
@@ -262,9 +312,9 @@ export function useTrillionaireStream() {
       );
       if (resp.ok) {
         const data = await resp.json();
-        // Immediately refresh positions & status
         setPositions([]);
         setStatus((prev) => (prev ? { ...prev, circuit_breaker_tripped: true } : null));
+        await fetchInitialState();
         return { success: true, message: `Emergency flatten executed: ${data.liquidated_orders_count} positions closed.` };
       } else {
         const err = await resp.json();
@@ -273,7 +323,7 @@ export function useTrillionaireStream() {
     } catch (e: any) {
       return { success: false, message: e.message || "Network error" };
     }
-  }, []);
+  }, [fetchInitialState]);
 
   // 5. Historical Replay Action
   const triggerReplay = useCallback(
@@ -289,6 +339,7 @@ export function useTrillionaireStream() {
         });
         if (resp.ok) {
           const data = await resp.json();
+          await fetchInitialState();
           return { success: true, message: `Replay completed: ${data.ticks_replayed} ticks replayed.` };
         } else {
           let errorMsg = "Replay trigger failed";
@@ -305,10 +356,10 @@ export function useTrillionaireStream() {
         return { success: false, message: e.message || "Network error" };
       }
     },
-    []
+    [fetchInitialState]
   );
 
-  // 6. Engine Lifecycle Actions (Start & Stop)
+  // 6. Engine Lifecycle Actions
   const startEngine = useCallback(async () => {
     try {
       const resp = await fetch(`${getApiBaseUrl()}/api/v1/control/engine/start`, {
@@ -377,6 +428,33 @@ export function useTrillionaireStream() {
     }
   }, [fetchInitialState]);
 
+  const overrideSentinelLock = useCallback(async (symbol: string) => {
+    try {
+      const resp = await fetch(
+        `${getApiBaseUrl()}/api/v1/sentinel/${encodeURIComponent(symbol)}/override`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-API-Key": ADMIN_KEY,
+          },
+        }
+      );
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.sentinel) {
+          setProfiles((prev) =>
+            prev.map((p) => (p.tradingsymbol === symbol ? { ...p, sentinel: data.sentinel } : p))
+          );
+        }
+        return { success: true };
+      }
+      return { success: false };
+    } catch {
+      return { success: false };
+    }
+  }, []);
+
   const refreshSentinelSummary = useCallback(async () => {
     try {
       const res = await fetch(`${getApiBaseUrl()}/api/v1/sentinel/summary`, {
@@ -397,7 +475,6 @@ export function useTrillionaireStream() {
     fetchInitialState();
     connectWebSocket();
 
-    // Refresh Sentinel Summary (Economic Times RSS) every 5 minutes in background
     const sentinelInterval = setInterval(() => {
       refreshSentinelSummary();
     }, 5 * 60 * 1000);
@@ -415,10 +492,11 @@ export function useTrillionaireStream() {
 
   // 7. Single Position Quick Exit Action
   const exitPosition = useCallback(
-    async (symbol: string, reason: string = "UI_MANUAL_EXIT") => {
+    async (symbol: string, reason: string = "MANUAL_EXIT") => {
       try {
+        const apiBase = getApiBaseUrl();
         const resp = await fetch(
-          `${getApiBaseUrl()}/api/v1/control/positions/${encodeURIComponent(symbol)}/exit?reason=${encodeURIComponent(reason)}`,
+          `${apiBase}/api/v1/control/positions/${encodeURIComponent(symbol)}/exit?reason=${encodeURIComponent(reason)}`,
           {
             method: "POST",
             headers: {
@@ -428,13 +506,16 @@ export function useTrillionaireStream() {
           }
         );
         if (resp.ok) {
-          const apiBase = getApiBaseUrl();
-          const [pRes, sRes] = await Promise.allSettled([
+          const [pRes, ctRes, sRes] = await Promise.allSettled([
             fetch(`${apiBase}/api/v1/positions`),
+            fetch(`${apiBase}/api/v1/closed-trades`),
             fetch(`${apiBase}/api/v1/status`),
           ]);
           if (pRes.status === "fulfilled" && pRes.value.ok) {
             setPositions(await pRes.value.json());
+          }
+          if (ctRes.status === "fulfilled" && ctRes.value.ok) {
+            setClosedTrades(await ctRes.value.json());
           }
           if (sRes.status === "fulfilled" && sRes.value.ok) {
             setStatus(await sRes.value.json());
@@ -481,12 +562,15 @@ export function useTrillionaireStream() {
     signals,
     orders,
     positions,
+    closedTrades,
     anomalies,
     riskAlerts,
     profiles,
     sentinelSummary,
     selectedSymbol,
     setSelectedSymbol,
+    selectedTimeframe,
+    setSelectedTimeframe,
     liveUnrealizedPnl,
     exitPosition,
     triggerEmergencyFlatten,
@@ -495,6 +579,7 @@ export function useTrillionaireStream() {
     stopEngine,
     pauseTrading,
     resumeTrading,
+    overrideSentinelLock,
     refreshState: fetchInitialState,
     refreshSentinelSummary,
   };

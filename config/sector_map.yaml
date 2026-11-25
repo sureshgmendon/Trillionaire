@@ -18,23 +18,23 @@ benchmark_indices:
     exchange: "NSE"
     description: "Nifty Information Technology Index"
   NIFTY AUTO:
-    token: 259601
+    token: 263433
     exchange: "NSE"
     description: "Nifty Auto Index"
   NIFTY PHARMA:
-    token: 260865
+    token: 262409
     exchange: "NSE"
     description: "Nifty Pharmaceuticals Index"
   NIFTY ENERGY:
-    token: 260609
+    token: 261641
     exchange: "NSE"
     description: "Nifty Energy Index"
   NIFTY FMCG:
-    token: 261889
+    token: 261897
     exchange: "NSE"
     description: "Nifty Fast Moving Consumer Goods Index"
   NIFTY METAL:
-    token: 261377
+    token: 263689
     exchange: "NSE"
     description: "Nifty Metal Index"
 
@@ -97,7 +97,7 @@ stocks:
     min_rvol_threshold: 1.75
 
   - tradingsymbol: "BANKBARODA"
-    instrument_token: 119553
+    instrument_token: 1195009
     parent_index: "NIFTY BANK"
     index_token: 260105
     cluster_regime: "TREND_MOMENTUM"
@@ -115,7 +115,7 @@ stocks:
     min_rvol_threshold: 1.85
 
   - tradingsymbol: "FEDERALBNK"
-    instrument_token: 262401
+    instrument_token: 261889
     parent_index: "NIFTY BANK"
     index_token: 260105
     cluster_regime: "TREND_MOMENTUM"
@@ -133,7 +133,7 @@ stocks:
     min_rvol_threshold: 1.70
 
   - tradingsymbol: "AUBANK"
-    instrument_token: 5434625
+    instrument_token: 5436929
     parent_index: "NIFTY BANK"
     index_token: 260105
     cluster_regime: "MEAN_REVERSION"
@@ -151,7 +151,7 @@ stocks:
     min_rvol_threshold: 1.55
 
   - tradingsymbol: "CANBK"
-    instrument_token: 275201
+    instrument_token: 2763265
     parent_index: "NIFTY BANK"
     index_token: 260105
     cluster_regime: "TREND_MOMENTUM"
@@ -160,7 +160,7 @@ stocks:
     min_rvol_threshold: 1.65
 
   - tradingsymbol: "UNIONBANK"
-    instrument_token: 708353
+    instrument_token: 2752769
     parent_index: "NIFTY BANK"
     index_token: 260105
     cluster_regime: "HIGH_RVOL_BREAKOUT"
@@ -217,7 +217,7 @@ stocks:
     min_rvol_threshold: 1.70
 
   - tradingsymbol: "LTM"
-    instrument_token: 4575233
+    instrument_token: 4561409
     parent_index: "NIFTY IT"
     index_token: 259849
     cluster_regime: "TREND_MOMENTUM"
@@ -226,7 +226,7 @@ stocks:
     min_rvol_threshold: 1.55
 
   - tradingsymbol: "PERSISTENT"
-    instrument_token: 4708097
+    instrument_token: 4701441
     parent_index: "NIFTY IT"
     index_token: 259849
     cluster_regime: "HIGH_RVOL_BREAKOUT"
@@ -235,7 +235,7 @@ stocks:
     min_rvol_threshold: 1.80
 
   - tradingsymbol: "COFORGE"
-    instrument_token: 2948609
+    instrument_token: 2955009
     parent_index: "NIFTY IT"
     index_token: 259849
     cluster_regime: "TREND_MOMENTUM"
@@ -244,7 +244,7 @@ stocks:
     min_rvol_threshold: 1.65
 
   - tradingsymbol: "MPHASIS"
-    instrument_token: 2772737
+    instrument_token: 1152769
     parent_index: "NIFTY IT"
     index_token: 259849
     cluster_regime: "MEAN_REVERSION"
@@ -253,7 +253,7 @@ stocks:
     min_rvol_threshold: 1.45
 
   - tradingsymbol: "LTTS"
-    instrument_token: 3141633
+    instrument_token: 4752385
     parent_index: "NIFTY IT"
     index_token: 259849
     cluster_regime: "TREND_MOMENTUM"
@@ -267,7 +267,7 @@ stocks:
   - tradingsymbol: "TMPV"
     instrument_token: 884737
     parent_index: "NIFTY AUTO"
-    index_token: 259601
+    index_token: 263433
     cluster_regime: "HIGH_RVOL_BREAKOUT"
     beta_5y: 1.62
     adr_pct: 2.75
@@ -276,7 +276,7 @@ stocks:
   - tradingsymbol: "M&M"
     instrument_token: 519937
     parent_index: "NIFTY AUTO"
-    index_token: 259601
+    index_token: 263433
     cluster_regime: "TREND_MOMENTUM"
     beta_5y: 1.26
     adr_pct: 2.10
@@ -285,7 +285,7 @@ stocks:
   - tradingsymbol: "MARUTI"
     instrument_token: 2815745
     parent_index: "NIFTY AUTO"
-    index_token: 259601
+    index_token: 263433
     cluster_regime: "TREND_MOMENTUM"
     beta_5y: 0.95
     adr_pct: 1.70
@@ -294,7 +294,7 @@ stocks:
   - tradingsymbol: "BAJAJ-AUTO"
     instrument_token: 4267265
     parent_index: "NIFTY AUTO"
-    index_token: 259601
+    index_token: 263433
     cluster_regime: "TREND_MOMENTUM"
     beta_5y: 0.88
     adr_pct: 1.85
@@ -303,7 +303,7 @@ stocks:
   - tradingsymbol: "EICHERMOT"
     instrument_token: 232961
     parent_index: "NIFTY AUTO"
-    index_token: 259601
+    index_token: 263433
     cluster_regime: "MEAN_REVERSION"
     beta_5y: 0.92
     adr_pct: 1.90
@@ -312,7 +312,7 @@ stocks:
   - tradingsymbol: "HEROMOTOCO"
     instrument_token: 345089
     parent_index: "NIFTY AUTO"
-    index_token: 259601
+    index_token: 263433
     cluster_regime: "TREND_MOMENTUM"
     beta_5y: 0.98
     adr_pct: 1.95
@@ -321,7 +321,7 @@ stocks:
   - tradingsymbol: "TVSMOTOR"
     instrument_token: 2170625
     parent_index: "NIFTY AUTO"
-    index_token: 259601
+    index_token: 263433
     cluster_regime: "TREND_MOMENTUM"
     beta_5y: 1.15
     adr_pct: 2.25
@@ -330,7 +330,7 @@ stocks:
   - tradingsymbol: "BHARATFORG"
     instrument_token: 108033
     parent_index: "NIFTY AUTO"
-    index_token: 259601
+    index_token: 263433
     cluster_regime: "HIGH_RVOL_BREAKOUT"
     beta_5y: 1.35
     adr_pct: 2.45
@@ -339,7 +339,7 @@ stocks:
   - tradingsymbol: "MOTHERSON"
     instrument_token: 1076225
     parent_index: "NIFTY AUTO"
-    index_token: 259601
+    index_token: 263433
     cluster_regime: "HIGH_RVOL_BREAKOUT"
     beta_5y: 1.42
     adr_pct: 2.80
@@ -348,7 +348,7 @@ stocks:
   - tradingsymbol: "BALKRISIND"
     instrument_token: 85761
     parent_index: "NIFTY AUTO"
-    index_token: 259601
+    index_token: 263433
     cluster_regime: "MEAN_REVERSION"
     beta_5y: 1.05
     adr_pct: 2.15
@@ -357,25 +357,25 @@ stocks:
   - tradingsymbol: "ASHOKLEY"
     instrument_token: 54273
     parent_index: "NIFTY AUTO"
-    index_token: 259601
+    index_token: 263433
     cluster_regime: "TREND_MOMENTUM"
     beta_5y: 1.30
     adr_pct: 2.50
     min_rvol_threshold: 1.65
 
   - tradingsymbol: "BOSCHLTD"
-    instrument_token: 5633
+    instrument_token: 558337
     parent_index: "NIFTY AUTO"
-    index_token: 259601
+    index_token: 263433
     cluster_regime: "MEAN_REVERSION"
     beta_5y: 0.85
     adr_pct: 1.65
     min_rvol_threshold: 1.30
 
   - tradingsymbol: "MRF"
-    instrument_token: 579073
+    instrument_token: 582913
     parent_index: "NIFTY AUTO"
-    index_token: 259601
+    index_token: 263433
     cluster_regime: "MEAN_REVERSION"
     beta_5y: 0.82
     adr_pct: 1.55
@@ -387,7 +387,7 @@ stocks:
   - tradingsymbol: "SUNPHARMA"
     instrument_token: 857857
     parent_index: "NIFTY PHARMA"
-    index_token: 260865
+    index_token: 262409
     cluster_regime: "TREND_MOMENTUM"
     beta_5y: 0.68
     adr_pct: 1.65
@@ -396,7 +396,7 @@ stocks:
   - tradingsymbol: "DRREDDY"
     instrument_token: 225537
     parent_index: "NIFTY PHARMA"
-    index_token: 260865
+    index_token: 262409
     cluster_regime: "MEAN_REVERSION"
     beta_5y: 0.63
     adr_pct: 1.55
@@ -405,7 +405,7 @@ stocks:
   - tradingsymbol: "CIPLA"
     instrument_token: 177665
     parent_index: "NIFTY PHARMA"
-    index_token: 260865
+    index_token: 262409
     cluster_regime: "MEAN_REVERSION"
     beta_5y: 0.59
     adr_pct: 1.50
@@ -414,7 +414,7 @@ stocks:
   - tradingsymbol: "DIVISLAB"
     instrument_token: 2800641
     parent_index: "NIFTY PHARMA"
-    index_token: 260865
+    index_token: 262409
     cluster_regime: "TREND_MOMENTUM"
     beta_5y: 0.86
     adr_pct: 2.10
@@ -423,16 +423,16 @@ stocks:
   - tradingsymbol: "APOLLOHOSP"
     instrument_token: 40193
     parent_index: "NIFTY PHARMA"
-    index_token: 260865
+    index_token: 262409
     cluster_regime: "TREND_MOMENTUM"
     beta_5y: 1.05
     adr_pct: 2.15
     min_rvol_threshold: 1.55
 
   - tradingsymbol: "LUPIN"
-    instrument_token: 2674433
+    instrument_token: 2672641
     parent_index: "NIFTY PHARMA"
-    index_token: 260865
+    index_token: 262409
     cluster_regime: "TREND_MOMENTUM"
     beta_5y: 0.95
     adr_pct: 2.20
@@ -441,7 +441,7 @@ stocks:
   - tradingsymbol: "TORNTPHARM"
     instrument_token: 900609
     parent_index: "NIFTY PHARMA"
-    index_token: 260865
+    index_token: 262409
     cluster_regime: "MEAN_REVERSION"
     beta_5y: 0.65
     adr_pct: 1.60
@@ -450,7 +450,7 @@ stocks:
   - tradingsymbol: "ZYDUSLIFE"
     instrument_token: 2029825
     parent_index: "NIFTY PHARMA"
-    index_token: 260865
+    index_token: 262409
     cluster_regime: "TREND_MOMENTUM"
     beta_5y: 0.85
     adr_pct: 2.05
@@ -459,16 +459,16 @@ stocks:
   - tradingsymbol: "AUROPHARMA"
     instrument_token: 70401
     parent_index: "NIFTY PHARMA"
-    index_token: 260865
+    index_token: 262409
     cluster_regime: "HIGH_RVOL_BREAKOUT"
     beta_5y: 1.15
     adr_pct: 2.45
     min_rvol_threshold: 1.70
 
   - tradingsymbol: "ALKEM"
-    instrument_token: 2977281
+    instrument_token: 2995969
     parent_index: "NIFTY PHARMA"
-    index_token: 260865
+    index_token: 262409
     cluster_regime: "MEAN_REVERSION"
     beta_5y: 0.70
     adr_pct: 1.75
@@ -477,25 +477,25 @@ stocks:
   - tradingsymbol: "BIOCON"
     instrument_token: 2911489
     parent_index: "NIFTY PHARMA"
-    index_token: 260865
+    index_token: 262409
     cluster_regime: "HIGH_RVOL_BREAKOUT"
     beta_5y: 1.20
     adr_pct: 2.50
     min_rvol_threshold: 1.75
 
   - tradingsymbol: "GLENMARK"
-    instrument_token: 1907457
+    instrument_token: 1895937
     parent_index: "NIFTY PHARMA"
-    index_token: 260865
+    index_token: 262409
     cluster_regime: "TREND_MOMENTUM"
     beta_5y: 1.08
     adr_pct: 2.35
     min_rvol_threshold: 1.60
 
   - tradingsymbol: "MAXHEALTH"
-    instrument_token: 5619969
+    instrument_token: 5728513
     parent_index: "NIFTY PHARMA"
-    index_token: 260865
+    index_token: 262409
     cluster_regime: "TREND_MOMENTUM"
     beta_5y: 0.98
     adr_pct: 2.10
@@ -507,7 +507,7 @@ stocks:
   - tradingsymbol: "RELIANCE"
     instrument_token: 738561
     parent_index: "NIFTY ENERGY"
-    index_token: 260609
+    index_token: 261641
     cluster_regime: "TREND_MOMENTUM"
     beta_5y: 1.15
     adr_pct: 1.90
@@ -516,16 +516,16 @@ stocks:
   - tradingsymbol: "NTPC"
     instrument_token: 2977281
     parent_index: "NIFTY ENERGY"
-    index_token: 260609
+    index_token: 261641
     cluster_regime: "TREND_MOMENTUM"
     beta_5y: 0.98
     adr_pct: 1.85
     min_rvol_threshold: 1.5
 
   - tradingsymbol: "POWERGRID"
-    instrument_token: 3812865
+    instrument_token: 3834113
     parent_index: "NIFTY ENERGY"
-    index_token: 260609
+    index_token: 261641
     cluster_regime: "MEAN_REVERSION"
     beta_5y: 0.72
     adr_pct: 1.55
@@ -534,7 +534,7 @@ stocks:
   - tradingsymbol: "ONGC"
     instrument_token: 633601
     parent_index: "NIFTY ENERGY"
-    index_token: 260609
+    index_token: 261641
     cluster_regime: "HIGH_RVOL_BREAKOUT"
     beta_5y: 1.25
     adr_pct: 2.30
@@ -543,7 +543,7 @@ stocks:
   - tradingsymbol: "BPCL"
     instrument_token: 134657
     parent_index: "NIFTY ENERGY"
-    index_token: 260609
+    index_token: 261641
     cluster_regime: "TREND_MOMENTUM"
     beta_5y: 1.12
     adr_pct: 2.10
@@ -552,7 +552,7 @@ stocks:
   - tradingsymbol: "COALINDIA"
     instrument_token: 5215745
     parent_index: "NIFTY ENERGY"
-    index_token: 260609
+    index_token: 261641
     cluster_regime: "HIGH_RVOL_BREAKOUT"
     beta_5y: 1.10
     adr_pct: 2.05
@@ -561,7 +561,7 @@ stocks:
   - tradingsymbol: "IOC"
     instrument_token: 415745
     parent_index: "NIFTY ENERGY"
-    index_token: 260609
+    index_token: 261641
     cluster_regime: "TREND_MOMENTUM"
     beta_5y: 1.05
     adr_pct: 2.15
@@ -570,25 +570,25 @@ stocks:
   - tradingsymbol: "TATAPOWER"
     instrument_token: 877057
     parent_index: "NIFTY ENERGY"
-    index_token: 260609
+    index_token: 261641
     cluster_regime: "HIGH_RVOL_BREAKOUT"
     beta_5y: 1.45
     adr_pct: 2.75
     min_rvol_threshold: 1.80
 
   - tradingsymbol: "ADANIGREEN"
-    instrument_token: 4451329
+    instrument_token: 912129
     parent_index: "NIFTY ENERGY"
-    index_token: 260609
+    index_token: 261641
     cluster_regime: "HIGH_RVOL_BREAKOUT"
     beta_5y: 1.65
     adr_pct: 3.50
     min_rvol_threshold: 1.85
 
   - tradingsymbol: "ADANIPOWER"
-    instrument_token: 4496385
+    instrument_token: 4451329
     parent_index: "NIFTY ENERGY"
-    index_token: 260609
+    index_token: 261641
     cluster_regime: "HIGH_RVOL_BREAKOUT"
     beta_5y: 1.70
     adr_pct: 3.65
@@ -597,7 +597,7 @@ stocks:
   - tradingsymbol: "GAIL"
     instrument_token: 1207553
     parent_index: "NIFTY ENERGY"
-    index_token: 260609
+    index_token: 261641
     cluster_regime: "TREND_MOMENTUM"
     beta_5y: 1.10
     adr_pct: 2.20
@@ -606,25 +606,25 @@ stocks:
   - tradingsymbol: "OIL"
     instrument_token: 4464129
     parent_index: "NIFTY ENERGY"
-    index_token: 260609
+    index_token: 261641
     cluster_regime: "HIGH_RVOL_BREAKOUT"
     beta_5y: 1.35
     adr_pct: 2.80
     min_rvol_threshold: 1.75
 
   - tradingsymbol: "PETRONET"
-    instrument_token: 2901761
+    instrument_token: 2905857
     parent_index: "NIFTY ENERGY"
-    index_token: 260609
+    index_token: 261641
     cluster_regime: "MEAN_REVERSION"
     beta_5y: 0.85
     adr_pct: 1.80
     min_rvol_threshold: 1.35
 
   - tradingsymbol: "NHPC"
-    instrument_token: 4652289
+    instrument_token: 4454401
     parent_index: "NIFTY ENERGY"
-    index_token: 260609
+    index_token: 261641
     cluster_regime: "TREND_MOMENTUM"
     beta_5y: 1.15
     adr_pct: 2.60
@@ -636,7 +636,7 @@ stocks:
   - tradingsymbol: "ITC"
     instrument_token: 424961
     parent_index: "NIFTY FMCG"
-    index_token: 261889
+    index_token: 261897
     cluster_regime: "MEAN_REVERSION"
     beta_5y: 0.65
     adr_pct: 1.40
@@ -645,7 +645,7 @@ stocks:
   - tradingsymbol: "HINDUNILVR"
     instrument_token: 356865
     parent_index: "NIFTY FMCG"
-    index_token: 261889
+    index_token: 261897
     cluster_regime: "MEAN_REVERSION"
     beta_5y: 0.58
     adr_pct: 1.35
@@ -654,7 +654,7 @@ stocks:
   - tradingsymbol: "NESTLEIND"
     instrument_token: 4598529
     parent_index: "NIFTY FMCG"
-    index_token: 261889
+    index_token: 261897
     cluster_regime: "MEAN_REVERSION"
     beta_5y: 0.55
     adr_pct: 1.30
@@ -663,7 +663,7 @@ stocks:
   - tradingsymbol: "BRITANNIA"
     instrument_token: 140033
     parent_index: "NIFTY FMCG"
-    index_token: 261889
+    index_token: 261897
     cluster_regime: "TREND_MOMENTUM"
     beta_5y: 0.62
     adr_pct: 1.45
@@ -672,7 +672,7 @@ stocks:
   - tradingsymbol: "TATACONSUM"
     instrument_token: 878593
     parent_index: "NIFTY FMCG"
-    index_token: 261889
+    index_token: 261897
     cluster_regime: "TREND_MOMENTUM"
     beta_5y: 0.85
     adr_pct: 1.80
@@ -681,61 +681,61 @@ stocks:
   - tradingsymbol: "DABUR"
     instrument_token: 197633
     parent_index: "NIFTY FMCG"
-    index_token: 261889
+    index_token: 261897
     cluster_regime: "MEAN_REVERSION"
     beta_5y: 0.60
     adr_pct: 1.45
     min_rvol_threshold: 1.30
 
   - tradingsymbol: "GODREJCP"
-    instrument_token: 257025
+    instrument_token: 2585345
     parent_index: "NIFTY FMCG"
-    index_token: 261889
+    index_token: 261897
     cluster_regime: "TREND_MOMENTUM"
     beta_5y: 0.75
     adr_pct: 1.70
     min_rvol_threshold: 1.40
 
   - tradingsymbol: "MARICO"
-    instrument_token: 1066497
+    instrument_token: 1041153
     parent_index: "NIFTY FMCG"
-    index_token: 261889
+    index_token: 261897
     cluster_regime: "MEAN_REVERSION"
     beta_5y: 0.58
     adr_pct: 1.50
     min_rvol_threshold: 1.30
 
   - tradingsymbol: "VBL"
-    instrument_token: 589569
+    instrument_token: 4843777
     parent_index: "NIFTY FMCG"
-    index_token: 261889
+    index_token: 261897
     cluster_regime: "TREND_MOMENTUM"
     beta_5y: 1.15
     adr_pct: 2.25
     min_rvol_threshold: 1.60
 
   - tradingsymbol: "COLPAL"
-    instrument_token: 387841
+    instrument_token: 3876097
     parent_index: "NIFTY FMCG"
-    index_token: 261889
+    index_token: 261897
     cluster_regime: "MEAN_REVERSION"
     beta_5y: 0.52
     adr_pct: 1.40
     min_rvol_threshold: 1.30
 
   - tradingsymbol: "UNITDSPR"
-    instrument_token: 2672641
+    instrument_token: 2674433
     parent_index: "NIFTY FMCG"
-    index_token: 261889
+    index_token: 261897
     cluster_regime: "TREND_MOMENTUM"
     beta_5y: 0.90
     adr_pct: 1.95
     min_rvol_threshold: 1.45
 
   - tradingsymbol: "PGHH"
-    instrument_token: 660225
+    instrument_token: 648961
     parent_index: "NIFTY FMCG"
-    index_token: 261889
+    index_token: 261897
     cluster_regime: "MEAN_REVERSION"
     beta_5y: 0.50
     adr_pct: 1.35
@@ -747,7 +747,7 @@ stocks:
   - tradingsymbol: "TATASTEEL"
     instrument_token: 895745
     parent_index: "NIFTY METAL"
-    index_token: 261377
+    index_token: 263689
     cluster_regime: "HIGH_RVOL_BREAKOUT"
     beta_5y: 1.45
     adr_pct: 2.60
@@ -756,7 +756,7 @@ stocks:
   - tradingsymbol: "JSWSTEEL"
     instrument_token: 3001089
     parent_index: "NIFTY METAL"
-    index_token: 261377
+    index_token: 263689
     cluster_regime: "TREND_MOMENTUM"
     beta_5y: 1.35
     adr_pct: 2.35
@@ -765,7 +765,7 @@ stocks:
   - tradingsymbol: "HINDALCO"
     instrument_token: 348929
     parent_index: "NIFTY METAL"
-    index_token: 261377
+    index_token: 263689
     cluster_regime: "HIGH_RVOL_BREAKOUT"
     beta_5y: 1.50
     adr_pct: 2.70
@@ -774,7 +774,7 @@ stocks:
   - tradingsymbol: "VEDL"
     instrument_token: 784129
     parent_index: "NIFTY METAL"
-    index_token: 261377
+    index_token: 263689
     cluster_regime: "HIGH_RVOL_BREAKOUT"
     beta_5y: 1.55
     adr_pct: 2.95
@@ -783,7 +783,7 @@ stocks:
   - tradingsymbol: "JINDALSTEL"
     instrument_token: 1723649
     parent_index: "NIFTY METAL"
-    index_token: 261377
+    index_token: 263689
     cluster_regime: "HIGH_RVOL_BREAKOUT"
     beta_5y: 1.60
     adr_pct: 3.10
@@ -792,7 +792,7 @@ stocks:
   - tradingsymbol: "NMDC"
     instrument_token: 3924993
     parent_index: "NIFTY METAL"
-    index_token: 261377
+    index_token: 263689
     cluster_regime: "TREND_MOMENTUM"
     beta_5y: 1.30
     adr_pct: 2.65
@@ -801,25 +801,25 @@ stocks:
   - tradingsymbol: "SAIL"
     instrument_token: 758529
     parent_index: "NIFTY METAL"
-    index_token: 261377
+    index_token: 263689
     cluster_regime: "HIGH_RVOL_BREAKOUT"
     beta_5y: 1.65
     adr_pct: 3.30
     min_rvol_threshold: 1.90
 
   - tradingsymbol: "NATIONALUM"
-    instrument_token: 1618177
+    instrument_token: 1629185
     parent_index: "NIFTY METAL"
-    index_token: 261377
+    index_token: 263689
     cluster_regime: "HIGH_RVOL_BREAKOUT"
     beta_5y: 1.48
     adr_pct: 2.90
     min_rvol_threshold: 1.75
 
   - tradingsymbol: "HINDZINC"
-    instrument_token: 384513
+    instrument_token: 364545
     parent_index: "NIFTY METAL"
-    index_token: 261377
+    index_token: 263689
     cluster_regime: "TREND_MOMENTUM"
     beta_5y: 1.20
     adr_pct: 2.40
@@ -865,7 +865,7 @@ stocks:
     min_rvol_threshold: 1.60
 
   - tradingsymbol: "TITAN"
-    instrument_token: 897281
+    instrument_token: 897537
     parent_index: "NIFTY 50"
     index_token: 256265
     cluster_regime: "TREND_MOMENTUM"
@@ -937,7 +937,7 @@ stocks:
     min_rvol_threshold: 1.35
 
   - tradingsymbol: "SHREECEM"
-    instrument_token: 806401
+    instrument_token: 794369
     parent_index: "NIFTY 50"
     index_token: 256265
     cluster_regime: "MEAN_REVERSION"
@@ -946,7 +946,7 @@ stocks:
     min_rvol_threshold: 1.35
 
   - tradingsymbol: "SIEMENS"
-    instrument_token: 806657
+    instrument_token: 806401
     parent_index: "NIFTY 50"
     index_token: 256265
     cluster_regime: "TREND_MOMENTUM"
@@ -955,7 +955,7 @@ stocks:
     min_rvol_threshold: 1.55
 
   - tradingsymbol: "BEL"
-    instrument_token: 975873
+    instrument_token: 98049
     parent_index: "NIFTY 50"
     index_token: 256265
     cluster_regime: "HIGH_RVOL_BREAKOUT"

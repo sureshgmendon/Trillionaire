@@ -18,7 +18,7 @@ import {
   TrendingUp,
   Zap,
 } from "lucide-react";
-import { EngineStatus, Position, Tick } from "@/types/telemetry";
+import { ClosedTrade, EngineStatus, Position, Tick } from "@/types/telemetry";
 import { ConnectionStatus } from "@/hooks/useTrillionaireStream";
 
 interface TopTelemetryBarProps {
@@ -26,6 +26,7 @@ interface TopTelemetryBarProps {
   status: EngineStatus | null;
   ticks?: Record<string, Tick>;
   positions?: Position[];
+  closedTrades?: ClosedTrade[];
   onEmergencyFlatten: () => Promise<{ success: boolean; message: string }>;
   onOpenReplayModal: () => void;
   onOpenSettingsModal: (initialTab?: string) => void;
@@ -41,6 +42,7 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
   status,
   ticks = {},
   positions = [],
+  closedTrades = [],
   onEmergencyFlatten,
   onOpenReplayModal,
   onOpenSettingsModal,
@@ -106,14 +108,23 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
     return Math.round(totalUnrealized * 100) / 100;
   }, [ticks, positions]);
 
-  // 2. Live Realized P&L & Total MTM Sync
+  // 2. Live Realized P&L & Total MTM Sync (summed across closed_trades ledger)
   const [liveRealizedPnl, setLiveRealizedPnl] = useState<number>(status?.realized_pnl ?? 0);
 
+  const closedTradesSum = React.useMemo(() => {
+    if (!closedTrades || closedTrades.length === 0) return null;
+    return Math.round(
+      closedTrades.reduce((acc, t) => acc + (t.realized_pnl || 0), 0) * 100
+    ) / 100;
+  }, [closedTrades]);
+
   useEffect(() => {
-    if (status?.realized_pnl !== undefined && status?.realized_pnl !== null) {
+    if (closedTradesSum !== null) {
+      setLiveRealizedPnl(closedTradesSum);
+    } else if (status?.realized_pnl !== undefined && status?.realized_pnl !== null) {
       setLiveRealizedPnl(status.realized_pnl);
     }
-  }, [status?.realized_pnl]);
+  }, [closedTradesSum, status?.realized_pnl]);
 
   // Poll GET /api/v1/status every 3000ms as reconciliation fallback
   useEffect(() => {
@@ -232,19 +243,45 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
 
           <div className="h-3.5 w-px bg-cockpit-border" />
 
-          {/* Feeder Badge - Solely Zerodha Kite Connect */}
-          <a
-            href="/api/v1/kite/login"
-            target="_blank"
-            rel="noopener noreferrer"
-            title="Zerodha Kite Connect WebSocket — Click to Login / Authenticate today's live session"
-            className="cursor-pointer hover:brightness-125 transition flex items-center space-x-1.5"
-          >
-            <Radio className="h-3.5 w-3.5 text-amber-400" />
-            <span className="text-xs font-mono font-semibold px-2 py-0.5 rounded border bg-amber-500/10 border-amber-500/40 text-amber-400">
-              FEED: KITE{kiteUserId ? ` (${kiteUserId})` : ""}
-            </span>
-          </a>
+          {/* Feeder Badge - Solely Zerodha Kite Connect with Token Expiry / Reconnect Alert */}
+          {status?.token_expired ? (
+            <button
+              type="button"
+              onClick={() => onOpenSettingsModal("broker")}
+              title="Zerodha Kite daily session expired (TokenException/403). Click to open Settings & Re-Login."
+              className="cursor-pointer hover:brightness-125 transition flex items-center space-x-1.5"
+            >
+              <AlertTriangle className="h-3.5 w-3.5 text-rose-400 animate-pulse" />
+              <span className="text-xs font-mono font-bold px-2 py-0.5 rounded border bg-rose-500/20 border-rose-500/60 text-rose-300 animate-pulse">
+                TOKEN EXPIRED (RE-LOGIN)
+              </span>
+            </button>
+          ) : (
+            <a
+              href="/api/v1/kite/login"
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Zerodha Kite Connect WebSocket — Click to Login / Authenticate today's live session"
+              className="cursor-pointer hover:brightness-125 transition flex items-center space-x-1.5"
+            >
+              <Radio
+                className={`h-3.5 w-3.5 ${
+                  status?.ticker_reconnecting ? "text-cyan-400 animate-spin" : "text-amber-400"
+                }`}
+              />
+              <span
+                className={`text-xs font-mono font-semibold px-2 py-0.5 rounded border ${
+                  status?.ticker_reconnecting
+                    ? "bg-cyan-500/10 border-cyan-500/40 text-cyan-300"
+                    : "bg-amber-500/10 border-amber-500/40 text-amber-400"
+                }`}
+              >
+                {status?.ticker_reconnecting
+                  ? "FEED: RECONNECTING"
+                  : `FEED: KITE${kiteUserId ? ` (${kiteUserId})` : ""}`}
+              </span>
+            </a>
+          )}
 
           {/* 5-Milestone Pipeline Readiness Pill */}
           {status?.milestones && (

@@ -3,18 +3,15 @@
 import React, { useState, useMemo } from "react";
 import {
   Activity,
-  ArrowDown,
-  ArrowUp,
   Download,
-  FileSpreadsheet,
   ListOrdered,
   PieChart,
   Search,
   X,
-  XCircle,
 } from "lucide-react";
 import {
   AnomalyAlert,
+  ClosedTrade,
   Order,
   Position,
   RiskAlert,
@@ -25,6 +22,7 @@ import {
 export interface PositionsAndOrdersTabsProps {
   positions: Position[];
   orders: Order[];
+  closedTrades?: ClosedTrade[];
   ticks?: Record<string, Tick>;
   onExitPosition?: (symbol: string) => Promise<{ success: boolean; message?: string }>;
   signals?: Signal[];
@@ -32,20 +30,40 @@ export interface PositionsAndOrdersTabsProps {
   riskAlerts?: RiskAlert[];
 }
 
-interface ReportItem {
-  product: string;
-  instrument: string;
-  qty: number;
-  avg: number;
-  ltp: number;
-  pnl: number;
-  chg_pct: number;
-  isOpen: boolean;
+function formatIstTime(iso?: string): string {
+  if (!iso) return "--:--:--";
+  const dt = new Date(iso);
+  if (Number.isNaN(dt.getTime())) return "--:--:--";
+  return dt.toLocaleTimeString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function getExitReasonBadgeClass(reason: string): string {
+  switch (reason) {
+    case "TARGET_HIT":
+      return "bg-emerald-500/20 text-emerald-300 border-emerald-500/40";
+    case "SL_HIT":
+      return "bg-rose-500/20 text-rose-300 border-rose-500/40";
+    case "FLATTEN_ALL":
+      return "bg-amber-500/20 text-amber-300 border-amber-500/40";
+    case "MANUAL_EXIT":
+      return "bg-cyan-500/20 text-cyan-300 border-cyan-500/40";
+    case "EOD_SQUARE_OFF":
+      return "bg-indigo-500/20 text-indigo-300 border-indigo-500/40";
+    default:
+      return "bg-slate-700/40 text-slate-300 border-slate-600/40";
+  }
 }
 
 export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
   positions = [],
   orders = [],
+  closedTrades = [],
   ticks = {},
   onExitPosition,
 }) => {
@@ -54,16 +72,11 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
   const [reportSearch, setReportSearch] = useState("");
   const [exitingSymbols, setExitingSymbols] = useState<Record<string, boolean>>({});
 
-  // ---------------------------------------------------------------------------
-  // Tab 1: OPEN DATA (Open Positions & Active Orders)
-  // ---------------------------------------------------------------------------
-  const openOrders = useMemo(() => {
-    return orders.filter(
-      (o) => o.status === "OPEN" || o.status === "PENDING_NEW"
-    );
-  }, [orders]);
-
-  const totalOpenCount = positions.length + openOrders.length;
+  // Strictly active net open positions (quantity > 0)
+  const activePositions = useMemo(
+    () => positions.filter((p) => (p.quantity || 0) > 0),
+    [positions]
+  );
 
   const handleExit = async (symbol: string) => {
     if (!onExitPosition) return;
@@ -75,51 +88,65 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
     }
   };
 
-  // ---------------------------------------------------------------------------
-  // Tab 2: EXECUTED ORDERS
-  // ---------------------------------------------------------------------------
-  const executedOrders = useMemo(() => {
-    return orders.filter(
-      (o) => o.status === "FILLED" || o.status === "CANCELLED" || o.status === "REJECTED"
-    );
+  // All session orders (OPEN, TRIGGER PENDING, PARTIALLY_FILLED, FILLED, CANCELLED, REJECTED)
+  const sortedOrders = useMemo(() => {
+    return orders
+      .slice()
+      .sort(
+        (a, b) =>
+          new Date(b.created_at_ist).getTime() - new Date(a.created_at_ist).getTime()
+      );
   }, [orders]);
 
   const filteredOrders = useMemo(() => {
-    if (!ordersSearch.trim()) return executedOrders;
+    if (!ordersSearch.trim()) return sortedOrders;
     const q = ordersSearch.toLowerCase().trim();
-    return executedOrders.filter(
+    return sortedOrders.filter(
       (o) =>
         o.tradingsymbol.toLowerCase().includes(q) ||
         o.side.toLowerCase().includes(q) ||
         o.product.toLowerCase().includes(q) ||
         o.status.toLowerCase().includes(q) ||
-        (o.exit_reason && o.exit_reason.toLowerCase().includes(q))
+        (o.order_type && o.order_type.toLowerCase().includes(q)) ||
+        (o.exit_reason && o.exit_reason.toLowerCase().includes(q)) ||
+        (o.rejection_reason && o.rejection_reason.toLowerCase().includes(q))
     );
-  }, [executedOrders, ordersSearch]);
+  }, [sortedOrders, ordersSearch]);
 
   const downloadOrdersCsv = () => {
     if (filteredOrders.length === 0) return;
-    const headers = ["Time", "Type", "Instrument", "Product", "Qty", "Avg Price", "Status", "Exit Reason"];
-    const rows = filteredOrders.map((o) => {
-      const timeStr = o.created_at_ist
-        ? new Date(o.created_at_ist).toLocaleTimeString("en-IN", {
-            hour12: false,
-            hour: "2-digit",
-            minute: "2-digit",
-            second: "2-digit",
-          })
-        : "";
-      return [
-        timeStr,
+    const headers = [
+      "Order ID",
+      "Time (IST)",
+      "Side",
+      "Symbol",
+      "Product",
+      "Order Type",
+      "Qty",
+      "Limit/Trigger Price",
+      "Fill Price",
+      "Status",
+      "Exit Reason",
+      "Rejection Reason",
+    ];
+    const rows = filteredOrders.map((o) =>
+      [
+        o.order_id,
+        formatIstTime(o.created_at_ist),
         o.side,
         o.tradingsymbol,
         o.product || "MIS",
+        o.order_type,
         `${o.filled_quantity}/${o.quantity}`,
-        (o.average_fill_price || o.limit_price || 0).toFixed(2),
+        (o.trigger_price ?? o.limit_price ?? 0).toFixed(2),
+        (o.average_fill_price ?? o.limit_price ?? 0).toFixed(2),
         o.status,
         o.exit_reason || "",
-      ].map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(",");
-    });
+        o.rejection_reason || "",
+      ]
+        .map((cell) => `"${String(cell).replace(/"/g, '""')}"`)
+        .join(",")
+    );
 
     const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows].join("\n");
     const encodedUri = encodeURI(csvContent);
@@ -131,146 +158,74 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
     document.body.removeChild(link);
   };
 
-  // ---------------------------------------------------------------------------
-  // Tab 3: REPORT DATA (Round-trip + Open Positions Summary)
-  // ---------------------------------------------------------------------------
-  const reportItems: ReportItem[] = useMemo(() => {
-    const symbolMap = new Map<string, ReportItem>();
-
-    // 1. Process active open positions
-    for (const pos of positions) {
-      const sym = pos.tradingsymbol;
-      const liveLtp = ticks[sym]?.ltp ?? pos.ltp ?? pos.average_entry_price;
-      const avg = pos.average_entry_price;
-      const isBuy = pos.side === "BUY";
-      const netQty = isBuy ? pos.quantity : -pos.quantity;
-      const unrl = isBuy ? (liveLtp - avg) * pos.quantity : (avg - liveLtp) * pos.quantity;
-      const chgPct = avg > 0 ? ((liveLtp - avg) / avg) * 100 * (isBuy ? 1 : -1) : 0;
-
-      symbolMap.set(sym, {
-        product: "MIS",
-        instrument: sym,
-        qty: netQty,
-        avg: Math.round(avg * 100) / 100,
-        ltp: Math.round(liveLtp * 100) / 100,
-        pnl: Math.round(unrl * 100) / 100,
-        chg_pct: Math.round(chgPct * 100) / 100,
-        isOpen: true,
-      });
-    }
-
-    // 2. Process closed executed trades for instruments not currently open or closed portions
-    // Group orders by symbol
-    const ordersBySym = new Map<string, Order[]>();
-    for (const ord of executedOrders) {
-      if (ord.status !== "FILLED") continue;
-      const list = ordersBySym.get(ord.tradingsymbol) || [];
-      list.push(ord);
-      ordersBySym.set(ord.tradingsymbol, list);
-    }
-
-    ordersBySym.forEach((symOrders, sym) => {
-      if (symbolMap.has(sym)) {
-        // If already in map from open positions, compute realized PnL addition
-        let realizedPnl = 0;
-        let totalBuyQty = 0;
-        let totalBuyVal = 0;
-        let totalSellQty = 0;
-        let totalSellVal = 0;
-
-        for (const ord of symOrders) {
-          const fillPrice = ord.average_fill_price || ord.limit_price || 0;
-          if (ord.side === "BUY") {
-            totalBuyQty += ord.filled_quantity;
-            totalBuyVal += ord.filled_quantity * fillPrice;
-          } else {
-            totalSellQty += ord.filled_quantity;
-            totalSellVal += ord.filled_quantity * fillPrice;
-          }
-        }
-
-        const closedPairs = Math.min(totalBuyQty, totalSellQty);
-        if (closedPairs > 0 && totalBuyQty > 0 && totalSellQty > 0) {
-          const buyAvg = totalBuyVal / totalBuyQty;
-          const sellAvg = totalSellVal / totalSellQty;
-          realizedPnl = (sellAvg - buyAvg) * closedPairs;
-        }
-
-        const item = symbolMap.get(sym)!;
-        item.pnl = Math.round((item.pnl + realizedPnl) * 100) / 100;
-      } else {
-        // Fully closed position
-        let totalBuyQty = 0;
-        let totalBuyVal = 0;
-        let totalSellQty = 0;
-        let totalSellVal = 0;
-
-        for (const ord of symOrders) {
-          const fillPrice = ord.average_fill_price || ord.limit_price || 0;
-          if (ord.side === "BUY") {
-            totalBuyQty += ord.filled_quantity;
-            totalBuyVal += ord.filled_quantity * fillPrice;
-          } else {
-            totalSellQty += ord.filled_quantity;
-            totalSellVal += ord.filled_quantity * fillPrice;
-          }
-        }
-
-        const buyAvg = totalBuyQty > 0 ? totalBuyVal / totalBuyQty : 0;
-        const sellAvg = totalSellQty > 0 ? totalSellVal / totalSellQty : 0;
-        const closedQty = Math.min(totalBuyQty, totalSellQty);
-        const pnl = closedQty > 0 ? (sellAvg - buyAvg) * closedQty : 0;
-        const chgPct = buyAvg > 0 ? ((sellAvg - buyAvg) / buyAvg) * 100 : 0;
-
-        symbolMap.set(sym, {
-          product: "MIS",
-          instrument: sym,
-          qty: 0,
-          avg: Math.round(buyAvg * 100) / 100,
-          ltp: Math.round(sellAvg * 100) / 100,
-          pnl: Math.round(pnl * 100) / 100,
-          chg_pct: Math.round(chgPct * 100) / 100,
-          isOpen: false,
-        });
-      }
-    });
-
-    return Array.from(symbolMap.values());
-  }, [positions, executedOrders, ticks]);
+  // Report reads strictly from immutable ClosedTrades ledger
+  const sortedClosedTrades = useMemo(() => {
+    return closedTrades
+      .slice()
+      .sort((a, b) => new Date(b.exit_time).getTime() - new Date(a.exit_time).getTime());
+  }, [closedTrades]);
 
   const filteredReportItems = useMemo(() => {
-    if (!reportSearch.trim()) return reportItems;
+    if (!reportSearch.trim()) return sortedClosedTrades;
     const q = reportSearch.toLowerCase().trim();
-    return reportItems.filter(
-      (item) =>
-        item.instrument.toLowerCase().includes(q) ||
-        item.product.toLowerCase().includes(q)
+    return sortedClosedTrades.filter(
+      (t) =>
+        t.symbol.toLowerCase().includes(q) ||
+        t.product.toLowerCase().includes(q) ||
+        t.side.toLowerCase().includes(q) ||
+        t.exit_reason.toLowerCase().includes(q)
     );
-  }, [reportItems, reportSearch]);
+  }, [sortedClosedTrades, reportSearch]);
 
   const totalReportPnl = useMemo(() => {
-    return Math.round(filteredReportItems.reduce((acc, i) => acc + i.pnl, 0) * 100) / 100;
+    return Math.round(
+      filteredReportItems.reduce((acc, item) => acc + (item.realized_pnl || 0), 0) * 100
+    ) / 100;
   }, [filteredReportItems]);
 
   const maxAbsPnl = useMemo(() => {
-    const maxVal = Math.max(...reportItems.map((i) => Math.abs(i.pnl)), 1);
-    return maxVal;
-  }, [reportItems]);
+    if (sortedClosedTrades.length === 0) return 1;
+    return Math.max(...sortedClosedTrades.map((t) => Math.abs(t.realized_pnl || 0)), 1);
+  }, [sortedClosedTrades]);
 
   const downloadReportCsv = () => {
     if (filteredReportItems.length === 0) return;
-    const headers = ["Product", "Instrument", "Qty", "Avg", "LTP", "P&L", "Chg Pct"];
-    const rows = filteredReportItems.map((i) => {
-      return [
-        i.product,
-        i.instrument,
-        i.qty,
-        i.avg.toFixed(2),
-        i.ltp.toFixed(2),
-        i.pnl.toFixed(2),
-        `${i.chg_pct.toFixed(2)}%`,
-      ].map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(",");
-    });
+    const headers = [
+      "Order ID",
+      "Entry Time (IST)",
+      "Exit Time (IST)",
+      "Product",
+      "Side",
+      "Symbol",
+      "Entry Price",
+      "SL Price",
+      "Target Price",
+      "Exit Price",
+      "Qty",
+      "Realized PnL",
+      "Chg Pct",
+      "Exit Reason",
+    ];
+    const rows = filteredReportItems.map((t) =>
+      [
+        t.order_id,
+        formatIstTime(t.entry_time),
+        formatIstTime(t.exit_time),
+        t.product,
+        t.side,
+        t.symbol,
+        t.entry_price.toFixed(2),
+        t.sl_price.toFixed(2),
+        t.target_price.toFixed(2),
+        t.actual_exit_price.toFixed(2),
+        t.filled_qty,
+        t.realized_pnl.toFixed(2),
+        `${t.pnl_pct.toFixed(2)}%`,
+        t.exit_reason,
+      ]
+        .map((cell) => `"${String(cell).replace(/"/g, '""')}"`)
+        .join(",")
+    );
 
     const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows].join("\n");
     const encodedUri = encodeURI(csvContent);
@@ -287,8 +242,9 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
       {/* 3-Tab Header Navigation */}
       <div className="h-11 border-b border-cockpit-border px-3 flex items-center justify-between shrink-0">
         <div className="flex items-center space-x-1">
-          {/* Tab 1: Open */}
+          {/* Tab 1: Open Positions */}
           <button
+            type="button"
             onClick={() => setActiveTab("OPEN")}
             className={`px-3 py-1.5 rounded-lg text-xs font-mono font-medium flex items-center space-x-1.5 transition ${
               activeTab === "OPEN"
@@ -300,17 +256,18 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
             <span>Open</span>
             <span
               className={`text-[10px] px-1.5 py-0.2 rounded font-bold ${
-                totalOpenCount > 0
+                activePositions.length > 0
                   ? "bg-blue-500/20 text-blue-300 border border-blue-500/40"
                   : "bg-cockpit-card text-cockpit-muted"
               }`}
             >
-              {totalOpenCount}
+              {activePositions.length}
             </span>
           </button>
 
           {/* Tab 2: Orders */}
           <button
+            type="button"
             onClick={() => setActiveTab("ORDERS")}
             className={`px-3 py-1.5 rounded-lg text-xs font-mono font-medium flex items-center space-x-1.5 transition ${
               activeTab === "ORDERS"
@@ -321,12 +278,13 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
             <ListOrdered className="h-3.5 w-3.5 text-purple-400" />
             <span>Orders</span>
             <span className="text-[10px] px-1.5 py-0.2 rounded bg-cockpit-card text-cockpit-muted">
-              {executedOrders.length}
+              {sortedOrders.length}
             </span>
           </button>
 
-          {/* Tab 3: Report */}
+          {/* Tab 3: Report (Closed Trades Ledger) */}
           <button
+            type="button"
             onClick={() => setActiveTab("REPORT")}
             className={`px-3 py-1.5 rounded-lg text-xs font-mono font-medium flex items-center space-x-1.5 transition ${
               activeTab === "REPORT"
@@ -337,12 +295,12 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
             <PieChart className="h-3.5 w-3.5 text-emerald-400" />
             <span>Report</span>
             <span className="text-[10px] px-1.5 py-0.2 rounded bg-cockpit-card text-cockpit-muted">
-              {reportItems.length}
+              {sortedClosedTrades.length}
             </span>
           </button>
         </div>
 
-        {/* Tab-Specific Top Right Actions */}
+        {/* Search & CSV Controls */}
         {activeTab === "ORDERS" && (
           <div className="flex items-center space-x-2">
             <div className="relative">
@@ -356,6 +314,7 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
               />
               {ordersSearch && (
                 <button
+                  type="button"
                   onClick={() => setOrdersSearch("")}
                   className="absolute right-1.5 top-1.5 text-cockpit-muted hover:text-white"
                 >
@@ -364,6 +323,7 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
               )}
             </div>
             <button
+              type="button"
               onClick={downloadOrdersCsv}
               title="Download Orders CSV"
               className="px-2 py-1 rounded bg-cockpit-surface hover:bg-cockpit-hover border border-cockpit-border text-cockpit-muted hover:text-white text-xs font-mono flex items-center space-x-1 transition"
@@ -387,6 +347,7 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
               />
               {reportSearch && (
                 <button
+                  type="button"
                   onClick={() => setReportSearch("")}
                   className="absolute right-1.5 top-1.5 text-cockpit-muted hover:text-white"
                 >
@@ -395,6 +356,7 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
               )}
             </div>
             <button
+              type="button"
               onClick={downloadReportCsv}
               title="Download Report CSV"
               className="px-2 py-1 rounded bg-cockpit-surface hover:bg-cockpit-hover border border-cockpit-border text-cockpit-muted hover:text-white text-xs font-mono flex items-center space-x-1 transition"
@@ -406,16 +368,16 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
         )}
       </div>
 
-      {/* ------------------------------------------------------------------- */}
-      {/* TAB 1: OPEN (Open Orders & Active Positions) */}
-      {/* ------------------------------------------------------------------- */}
+      {/* TAB 1: OPEN POSITIONS ONLY */}
       {activeTab === "OPEN" && (
         <div className="flex-1 overflow-y-auto">
-          {positions.length === 0 && openOrders.length === 0 ? (
+          {activePositions.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-cockpit-muted text-xs font-mono space-y-1">
               <Activity className="h-6 w-6 text-cockpit-muted/40 mb-1" />
-              <span>No active open orders or positions.</span>
-              <span className="text-[10px]">Scanning active cluster regimes...</span>
+              <span>No active open positions.</span>
+              <span className="text-[10px]">
+                Pending SL/Target legs are displayed cleanly in the Orders tab.
+              </span>
             </div>
           ) : (
             <table className="w-full text-left text-xs font-mono">
@@ -424,34 +386,31 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
                   <th className="py-2 px-3">Time</th>
                   <th className="py-2 px-2">Type</th>
                   <th className="py-2 px-3">Instrument</th>
-                  <th className="py-2 px-2">Product</th>
-                  <th className="py-2 px-2 text-right">Qty.</th>
+                  <th className="py-2 px-2 text-right">Entry (Avg.)</th>
+                  <th className="py-2 px-2 text-right">SL</th>
+                  <th className="py-2 px-2 text-right">Target</th>
                   <th className="py-2 px-2 text-right">LTP</th>
-                  <th className="py-2 px-2 text-right">Price</th>
-                  <th className="py-2 px-3 text-right">Status</th>
+                  <th className="py-2 px-2 text-right">Qty.</th>
+                  <th className="py-2 px-2 text-right">Unrealized P&L</th>
+                  <th className="py-2 px-3 text-right">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-cockpit-border/40">
-                {/* 1. Active Open Positions */}
-                {positions.map((pos) => {
+                {activePositions.map((pos) => {
                   const sym = pos.tradingsymbol;
                   const isBuy = pos.side === "BUY";
                   const liveLtp = ticks[sym]?.ltp ?? pos.ltp ?? pos.average_entry_price;
+                  const unrealized = isBuy
+                    ? (liveLtp - pos.average_entry_price) * pos.quantity
+                    : (pos.average_entry_price - liveLtp) * pos.quantity;
                   const isExiting = !!exitingSymbols[sym];
+                  const isProfit = unrealized >= 0;
 
                   return (
                     <tr key={`pos-${sym}`} className="hover:bg-cockpit-surface/50 transition">
-                      {/* Time */}
                       <td className="py-2.5 px-3 text-cockpit-muted whitespace-nowrap">
-                        {new Date().toLocaleTimeString("en-IN", {
-                          hour12: false,
-                          hour: "2-digit",
-                          minute: "2-digit",
-                          second: "2-digit",
-                        })}
+                        {formatIstTime(pos.entry_time)}
                       </td>
-
-                      {/* Type: BUY blue pill / SELL red pill */}
                       <td className="py-2.5 px-2">
                         <span
                           className={`px-2 py-0.5 rounded text-[10px] font-bold ${
@@ -463,127 +422,47 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
                           {pos.side}
                         </span>
                       </td>
-
-                      {/* Instrument: Symbol + NSE tag */}
-                      <td className="py-2.5 px-3 font-bold text-white flex items-center space-x-1.5">
+                      <td className="py-2.5 px-3 font-bold text-white whitespace-nowrap">
                         <span>{sym}</span>
-                        <span className="text-[9px] px-1 py-0.2 rounded bg-cockpit-surface border border-cockpit-border text-cockpit-muted font-normal">
-                          NSE
-                        </span>
-                      </td>
-
-                      {/* Product: MIS purple badge */}
-                      <td className="py-2.5 px-2">
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-500/20 text-purple-300 border border-purple-500/40">
+                        <span className="ml-1.5 text-[9px] px-1 py-0.2 rounded bg-cockpit-surface border border-cockpit-border text-cockpit-muted font-normal">
                           MIS
                         </span>
                       </td>
-
-                      {/* Qty: filled/total e.g. 197/197 */}
-                      <td className="py-2.5 px-2 text-right font-medium text-white tabular-nums">
-                        {pos.quantity}/{pos.quantity}
-                      </td>
-
-                      {/* LTP: live streaming tick price */}
-                      <td className="py-2.5 px-2 text-right font-bold text-white tabular-nums">
-                        ₹{liveLtp.toFixed(2)}
-                      </td>
-
-                      {/* Price: limit or avg entry price */}
-                      <td className="py-2.5 px-2 text-right text-cockpit-muted tabular-nums">
+                      <td className="py-2.5 px-2 text-right text-slate-300 tabular-nums">
                         ₹{pos.average_entry_price.toFixed(2)}
                       </td>
-
-                      {/* Status: ACTIVE badge + quick Exit action button */}
-                      <td className="py-2.5 px-3 text-right">
-                        <div className="flex items-center justify-end space-x-2">
-                          <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40">
-                            ACTIVE
-                          </span>
-                          <button
-                            onClick={() => handleExit(sym)}
-                            disabled={isExiting}
-                            className={`px-2 py-0.5 rounded text-[10px] font-bold border transition flex items-center space-x-1 ${
-                              isExiting
-                                ? "bg-rose-500/10 text-rose-500 border-rose-500/30 cursor-not-allowed"
-                                : "bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border-rose-500/50"
-                            }`}
-                          >
-                            <span>{isExiting ? "Exiting..." : "Exit"}</span>
-                          </button>
-                        </div>
+                      <td className="py-2.5 px-2 text-right text-rose-400 tabular-nums">
+                        ₹{pos.stop_loss.toFixed(2)}
                       </td>
-                    </tr>
-                  );
-                })}
-
-                {/* 2. Open / Pending Orders */}
-                {openOrders.map((ord) => {
-                  const sym = ord.tradingsymbol;
-                  const isBuy = ord.side === "BUY";
-                  const liveLtp = ticks[sym]?.ltp ?? ord.limit_price ?? 0;
-                  const timeStr = ord.created_at_ist
-                    ? new Date(ord.created_at_ist).toLocaleTimeString("en-IN", {
-                        hour12: false,
-                        hour: "2-digit",
-                        minute: "2-digit",
-                        second: "2-digit",
-                      })
-                    : "--:--:--";
-
-                  return (
-                    <tr key={`ord-${ord.order_id}`} className="hover:bg-cockpit-surface/50 transition">
-                      {/* Time */}
-                      <td className="py-2.5 px-3 text-cockpit-muted whitespace-nowrap">{timeStr}</td>
-
-                      {/* Type: BUY blue pill / SELL red pill */}
-                      <td className="py-2.5 px-2">
-                        <span
-                          className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                            isBuy
-                              ? "bg-blue-500/20 text-blue-400 border border-blue-500/40"
-                              : "bg-rose-500/20 text-rose-400 border border-rose-500/40"
-                          }`}
-                        >
-                          {ord.side}
-                        </span>
+                      <td className="py-2.5 px-2 text-right text-emerald-400 tabular-nums">
+                        ₹{pos.target_price.toFixed(2)}
                       </td>
-
-                      {/* Instrument: Symbol + NSE tag */}
-                      <td className="py-2.5 px-3 font-bold text-white flex items-center space-x-1.5">
-                        <span>{sym}</span>
-                        <span className="text-[9px] px-1 py-0.2 rounded bg-cockpit-surface border border-cockpit-border text-cockpit-muted font-normal">
-                          NSE
-                        </span>
-                      </td>
-
-                      {/* Product: MIS purple badge */}
-                      <td className="py-2.5 px-2">
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-500/20 text-purple-300 border border-purple-500/40">
-                          {ord.product || "MIS"}
-                        </span>
-                      </td>
-
-                      {/* Qty: filled/total e.g. 0/100 */}
-                      <td className="py-2.5 px-2 text-right font-medium text-white tabular-nums">
-                        {ord.filled_quantity}/{ord.quantity}
-                      </td>
-
-                      {/* LTP: live streaming tick price */}
                       <td className="py-2.5 px-2 text-right font-bold text-white tabular-nums">
                         ₹{liveLtp.toFixed(2)}
                       </td>
-
-                      {/* Price: limit price */}
-                      <td className="py-2.5 px-2 text-right text-cockpit-muted tabular-nums">
-                        ₹{ord.limit_price?.toFixed(2) || "MKT"}
+                      <td className="py-2.5 px-2 text-right font-medium text-white tabular-nums">
+                        {pos.quantity}
                       </td>
-
-                      {/* Status: OPEN badge */}
+                      <td
+                        className={`py-2.5 px-2 text-right font-bold tabular-nums ${
+                          isProfit ? "text-emerald-400" : "text-rose-400"
+                        }`}
+                      >
+                        {isProfit ? "+" : ""}₹{unrealized.toFixed(2)}
+                      </td>
                       <td className="py-2.5 px-3 text-right">
-                        <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-blue-500/20 text-blue-400 border border-blue-500/40">
-                          OPEN
-                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleExit(sym)}
+                          disabled={isExiting}
+                          className={`px-2.5 py-0.5 rounded text-[10px] font-bold border transition ${
+                            isExiting
+                              ? "bg-rose-500/10 text-rose-500 border-rose-500/30 cursor-not-allowed"
+                              : "bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border-rose-500/50"
+                          }`}
+                        >
+                          {isExiting ? "Exiting..." : "Exit"}
+                        </button>
                       </td>
                     </tr>
                   );
@@ -594,53 +473,50 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
         </div>
       )}
 
-      {/* ------------------------------------------------------------------- */}
-      {/* TAB 2: ORDERS (Executed Order Book) */}
-      {/* ------------------------------------------------------------------- */}
+      {/* TAB 2: ORDERS (Full Order Book: OPEN, TRIGGER PENDING, FILLED, CANCELLED, REJECTED) */}
       {activeTab === "ORDERS" && (
         <div className="flex-1 overflow-y-auto">
           {filteredOrders.length === 0 ? (
             <div className="h-full flex items-center justify-center text-cockpit-muted text-xs font-mono">
-              <span>{ordersSearch ? "No orders matching query." : "No executed orders recorded in current session."}</span>
+              <span>
+                {ordersSearch
+                  ? "No orders matching query."
+                  : "No orders recorded in current session."}
+              </span>
             </div>
           ) : (
             <table className="w-full text-left text-xs font-mono">
               <thead className="sticky top-0 bg-cockpit-surface/90 backdrop-blur-sm border-b border-cockpit-border text-[10px] text-cockpit-muted uppercase">
                 <tr>
                   <th className="py-2 px-3">Time</th>
-                  <th className="py-2 px-2">Type</th>
+                  <th className="py-2 px-2">Side</th>
                   <th className="py-2 px-3">Instrument</th>
-                  <th className="py-2 px-2">Product</th>
+                  <th className="py-2 px-2">Order Type</th>
                   <th className="py-2 px-2 text-right">Qty.</th>
-                  <th className="py-2 px-2 text-right">Avg. price</th>
-                  <th className="py-2 px-3 text-center">Status</th>
+                  <th className="py-2 px-2 text-right">Price</th>
+                  <th className="py-2 px-2 text-center">Status</th>
+                  <th className="py-2 px-3">Note / Reason</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-cockpit-border/40">
                 {filteredOrders.map((ord) => {
                   const isBuy = ord.side === "BUY";
-                  const timeStr = ord.created_at_ist
-                    ? new Date(ord.created_at_ist).toLocaleTimeString("en-IN", {
-                        hour12: false,
-                        hour: "2-digit",
-                        minute: "2-digit",
-                        second: "2-digit",
-                      })
-                    : "--:--:--";
-                  const executedPrice = ord.average_fill_price || ord.limit_price || 0;
+                  const displayPrice =
+                    ord.average_fill_price || ord.trigger_price || ord.limit_price || 0;
                   const isComplete = ord.status === "FILLED";
                   const isRejected = ord.status === "REJECTED";
                   const isCancelled = ord.status === "CANCELLED";
-                  const tooltipText = ord.exit_reason
-                    ? `Exit Trigger: ${ord.exit_reason}`
-                    : `Order Status: ${ord.status}`;
+                  const isTriggerPending = ord.status === "TRIGGER PENDING";
+                  const note =
+                    ord.rejection_reason ||
+                    ord.exit_reason ||
+                    (ord.is_exit ? "OCO Exit Leg" : "Entry");
 
                   return (
                     <tr key={ord.order_id} className="hover:bg-cockpit-surface/50 transition">
-                      {/* 1. Time */}
-                      <td className="py-2 px-3 text-cockpit-muted whitespace-nowrap">{timeStr}</td>
-
-                      {/* 2. Type: BUY blue pill / SELL red pill */}
+                      <td className="py-2 px-3 text-cockpit-muted whitespace-nowrap">
+                        {formatIstTime(ord.created_at_ist)}
+                      </td>
                       <td className="py-2 px-2">
                         <span
                           className={`px-2 py-0.5 rounded text-[10px] font-bold ${
@@ -652,48 +528,45 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
                           {ord.side}
                         </span>
                       </td>
-
-                      {/* 3. Instrument: Symbol + NSE tag */}
-                      <td className="py-2 px-3 font-bold text-white flex items-center space-x-1.5">
+                      <td className="py-2 px-3 font-bold text-white whitespace-nowrap">
                         <span>{ord.tradingsymbol}</span>
-                        <span className="text-[9px] px-1 py-0.2 rounded bg-cockpit-surface border border-cockpit-border text-cockpit-muted font-normal">
-                          NSE
-                        </span>
-                      </td>
-
-                      {/* 4. Product: MIS purple badge */}
-                      <td className="py-2 px-2">
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-500/20 text-purple-300 border border-purple-500/40">
+                        <span className="ml-1.5 text-[9px] px-1 py-0.2 rounded bg-purple-500/20 text-purple-300 border border-purple-500/40 font-normal">
                           {ord.product || "MIS"}
                         </span>
                       </td>
-
-                      {/* 5. Qty: filled/total e.g. 197/197 */}
+                      <td className="py-2 px-2 text-slate-300 text-[11px]">
+                        {ord.order_type === "SL_LIMIT" ? "SL-L" : ord.order_type}
+                      </td>
                       <td className="py-2 px-2 text-right font-medium text-white tabular-nums">
                         {ord.filled_quantity}/{ord.quantity}
                       </td>
-
-                      {/* 6. Avg. price: exact executed fill price */}
                       <td className="py-2 px-2 text-right font-medium text-white tabular-nums">
-                        ₹{executedPrice.toFixed(2)}
+                        ₹{displayPrice.toFixed(2)}
                       </td>
-
-                      {/* 7. Status: COMPLETE green / REJECTED red / CANCELLED muted with tooltip */}
-                      <td className="py-2 px-3 text-center">
+                      <td className="py-2 px-2 text-center">
                         <span
-                          title={tooltipText}
-                          className={`px-2 py-0.5 rounded text-[10px] font-semibold uppercase cursor-help ${
+                          className={`px-2 py-0.5 rounded text-[10px] font-semibold uppercase ${
                             isComplete
                               ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40"
                               : isRejected
                               ? "bg-rose-500/20 text-rose-400 border border-rose-500/40"
                               : isCancelled
                               ? "bg-slate-700/40 text-slate-400 border border-slate-600/40"
+                              : isTriggerPending
+                              ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
                               : "bg-blue-500/20 text-blue-400 border border-blue-500/40"
                           }`}
                         >
                           {isComplete ? "COMPLETE" : ord.status}
                         </span>
+                      </td>
+                      <td
+                        title={note}
+                        className={`py-2 px-3 text-[11px] max-w-[220px] truncate ${
+                          isRejected ? "text-rose-400" : "text-cockpit-muted"
+                        }`}
+                      >
+                        {note}
                       </td>
                     </tr>
                   );
@@ -704,144 +577,161 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
         </div>
       )}
 
-      {/* ------------------------------------------------------------------- */}
-      {/* TAB 3: REPORT (Kite Positions Summary & Horizontal P&L Breakdown) */}
-      {/* ------------------------------------------------------------------- */}
+      {/* TAB 3: REPORT (Immutable Closed-Trades Ledger) */}
       {activeTab === "REPORT" && (
         <div className="flex-1 overflow-y-auto flex flex-col">
           {filteredReportItems.length === 0 ? (
             <div className="h-full flex items-center justify-center text-cockpit-muted text-xs font-mono">
-              <span>{reportSearch ? "No report items matching query." : "No positions recorded today."}</span>
+              <span>
+                {reportSearch
+                  ? "No closed trades matching query."
+                  : "No closed trades recorded today."}
+              </span>
             </div>
           ) : (
             <div className="flex-1 flex flex-col">
-              {/* Top Table */}
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs font-mono">
                   <thead className="sticky top-0 bg-cockpit-surface/90 backdrop-blur-sm border-b border-cockpit-border text-[10px] text-cockpit-muted uppercase">
                     <tr>
-                      <th className="py-2 px-3">Product</th>
-                      <th className="py-2 px-3">Instrument</th>
-                      <th className="py-2 px-2 text-right">Qty.</th>
-                      <th className="py-2 px-2 text-right">Avg.</th>
-                      <th className="py-2 px-2 text-right">LTP</th>
-                      <th className="py-2 px-3 text-right">P&L</th>
-                      <th className="py-2 px-3 text-right">Chg.</th>
+                      <th className="py-2 px-2">Time</th>
+                      <th className="py-2 px-2">Side</th>
+                      <th className="py-2 px-2">Symbol</th>
+                      <th className="py-2 px-2 text-right">Entry</th>
+                      <th className="py-2 px-2 text-right">SL</th>
+                      <th className="py-2 px-2 text-right">Target</th>
+                      <th className="py-2 px-2 text-right">Exit Price</th>
+                      <th className="py-2 px-2 text-right">Qty</th>
+                      <th className="py-2 px-2 text-right">Realized P&L</th>
+                      <th className="py-2 px-2 text-right">Chg %</th>
+                      <th className="py-2 px-3 text-center">Exit Reason</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-cockpit-border/40">
-                    {filteredReportItems.map((item) => {
-                      const isProfit = item.pnl >= 0;
-                      const isLong = item.qty > 0;
-                      const isShort = item.qty < 0;
+                    {filteredReportItems.map((trade) => {
+                      const isProfit = trade.realized_pnl >= 0;
+                      const isBuy = trade.side === "BUY";
 
                       return (
-                        <tr key={item.instrument} className="hover:bg-cockpit-surface/50 transition">
-                          {/* 1. Product: MIS purple badge */}
-                          <td className="py-2 px-3">
-                            <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-500/20 text-purple-300 border border-purple-500/40">
-                              MIS
+                        <tr
+                          key={`${trade.order_id}-${trade.exit_time}`}
+                          className="hover:bg-cockpit-surface/50 transition"
+                        >
+                          <td className="py-2 px-2 text-cockpit-muted whitespace-nowrap">
+                            {formatIstTime(trade.exit_time)}
+                          </td>
+                          <td className="py-2 px-2">
+                            <span
+                              className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                isBuy
+                                  ? "bg-blue-500/20 text-blue-400 border border-blue-500/40"
+                                  : "bg-rose-500/20 text-rose-400 border border-rose-500/40"
+                              }`}
+                            >
+                              {trade.side}
                             </span>
                           </td>
-
-                          {/* 2. Instrument: Symbol + NSE tag */}
-                          <td className="py-2 px-3 font-bold text-white flex items-center space-x-1.5">
-                            <span>{item.instrument}</span>
-                            <span className="text-[9px] px-1 py-0.2 rounded bg-cockpit-surface border border-cockpit-border text-cockpit-muted font-normal">
-                              NSE
+                          <td className="py-2 px-2 font-bold text-white whitespace-nowrap">
+                            <span>{trade.symbol}</span>
+                            <span className="ml-1 text-[9px] px-1 py-0.2 rounded bg-purple-500/20 text-purple-300 border border-purple-500/40 font-normal">
+                              {trade.product}
                             </span>
                           </td>
-
-                          {/* 3. Qty.: blue for long, red for short, muted 0 for squared-off */}
-                          <td
-                            className={`py-2 px-2 text-right font-medium tabular-nums ${
-                              isLong
-                                ? "text-blue-400 font-bold"
-                                : isShort
-                                ? "text-rose-400 font-bold"
-                                : "text-cockpit-muted"
-                            }`}
-                          >
-                            {item.qty}
+                          <td className="py-2 px-2 text-right text-slate-300 tabular-nums">
+                            ₹{trade.entry_price.toFixed(2)}
                           </td>
-
-                          {/* 4. Avg. */}
-                          <td className="py-2 px-2 text-right text-cockpit-muted tabular-nums">
-                            ₹{item.avg.toFixed(2)}
+                          <td className="py-2 px-2 text-right text-rose-400 tabular-nums">
+                            ₹{trade.sl_price.toFixed(2)}
                           </td>
-
-                          {/* 5. LTP */}
+                          <td className="py-2 px-2 text-right text-emerald-400 tabular-nums">
+                            ₹{trade.target_price.toFixed(2)}
+                          </td>
                           <td className="py-2 px-2 text-right font-bold text-white tabular-nums">
-                            ₹{item.ltp.toFixed(2)}
+                            ₹{trade.actual_exit_price.toFixed(2)}
                           </td>
-
-                          {/* 6. P&L: green +₹... / red -₹... tabular-nums */}
+                          <td className="py-2 px-2 text-right text-white tabular-nums">
+                            {trade.filled_qty}
+                          </td>
                           <td
-                            className={`py-2 px-3 text-right font-bold tabular-nums ${
+                            className={`py-2 px-2 text-right font-bold tabular-nums ${
                               isProfit ? "text-emerald-400" : "text-rose-400"
                             }`}
                           >
-                            {isProfit ? "+" : ""}₹{item.pnl.toFixed(2)}
+                            {isProfit ? "+" : ""}₹{trade.realized_pnl.toFixed(2)}
                           </td>
-
-                          {/* 7. Chg.: +X.XX% / -X.XX% */}
                           <td
-                            className={`py-2 px-3 text-right tabular-nums text-xs font-semibold ${
-                              item.chg_pct >= 0 ? "text-emerald-400" : "text-rose-400"
+                            className={`py-2 px-2 text-right tabular-nums font-semibold ${
+                              trade.pnl_pct >= 0 ? "text-emerald-400" : "text-rose-400"
                             }`}
                           >
-                            {item.chg_pct >= 0 ? "+" : ""}
-                            {item.chg_pct.toFixed(2)}%
+                            {trade.pnl_pct >= 0 ? "+" : ""}
+                            {trade.pnl_pct.toFixed(2)}%
+                          </td>
+                          <td className="py-2 px-3 text-center">
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-semibold border whitespace-nowrap ${getExitReasonBadgeClass(
+                                trade.exit_reason
+                              )}`}
+                            >
+                              {trade.exit_reason}
+                            </span>
                           </td>
                         </tr>
                       );
                     })}
                   </tbody>
-                  {/* Total Summary Row at bottom of table */}
                   <tfoot className="border-t-2 border-cockpit-border bg-cockpit-surface/80 font-bold">
                     <tr>
-                      <td colSpan={2} className="py-2.5 px-3 text-white uppercase text-xs">
-                        Total
+                      <td colSpan={3} className="py-2.5 px-3 text-white uppercase text-xs">
+                        Total ({filteredReportItems.length} Closed Trades)
                       </td>
-                      <td colSpan={3} className="py-2.5 px-2 text-right text-cockpit-muted text-[11px]">
-                        Net Realized + Unrealized
+                      <td colSpan={5} className="py-2.5 px-2 text-right text-cockpit-muted text-[11px]">
+                        Realized Ledger P&L (incl. charges)
                       </td>
                       <td
-                        className={`py-2.5 px-3 text-right text-sm tabular-nums font-bold ${
+                        className={`py-2.5 px-2 text-right text-sm tabular-nums font-bold ${
                           totalReportPnl >= 0 ? "text-emerald-400" : "text-rose-400"
                         }`}
                       >
-                        {totalReportPnl >= 0 ? "+" : ""}₹{totalReportPnl.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        {totalReportPnl >= 0 ? "+" : ""}₹
+                        {totalReportPnl.toLocaleString("en-IN", {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2,
+                        })}
                       </td>
-                      <td className="py-2.5 px-3 text-right"></td>
+                      <td colSpan={2} />
                     </tr>
                   </tfoot>
                 </table>
               </div>
 
-              {/* Bottom Visual Horizontal P&L Breakdown (Zero-Centered) */}
+              {/* Bottom Horizontal P&L Breakdown */}
               <div className="p-3 border-t border-cockpit-border bg-cockpit-surface/30">
                 <div className="text-[10px] font-mono uppercase tracking-wider text-cockpit-muted mb-2 flex items-center justify-between">
-                  <span>Horizontal P&L Breakdown</span>
-                  <span className="text-[9px] text-cockpit-muted/60">Zero-Centered (Losing ← 0 → Profitable)</span>
+                  <span>Horizontal Closed-Trade P&L Breakdown</span>
+                  <span className="text-[9px] text-cockpit-muted/60">
+                    Zero-Centered (Losing ← 0 → Profitable)
+                  </span>
                 </div>
-
                 <div className="space-y-1.5">
-                  {reportItems.map((item) => {
-                    const isProfit = item.pnl >= 0;
-                    const barWidthPct = maxAbsPnl > 0 ? Math.min(100, (Math.abs(item.pnl) / maxAbsPnl) * 100) : 0;
-
+                  {sortedClosedTrades.map((trade) => {
+                    const isProfit = trade.realized_pnl >= 0;
+                    const barWidthPct =
+                      maxAbsPnl > 0
+                        ? Math.min(100, (Math.abs(trade.realized_pnl) / maxAbsPnl) * 100)
+                        : 0;
                     return (
-                      <div key={`bar-${item.instrument}`} className="flex items-center text-xs font-mono">
-                        {/* Label: <SYMBOL> (MIS) */}
-                        <div className="w-28 sm:w-36 shrink-0 truncate font-semibold text-white">
-                          <span>{item.instrument}</span>
-                          <span className="text-[10px] text-purple-400 ml-1">(MIS)</span>
+                      <div
+                        key={`bar-${trade.order_id}`}
+                        className="flex items-center text-xs font-mono"
+                      >
+                        <div className="w-32 sm:w-40 shrink-0 truncate font-semibold text-white">
+                          <span>{trade.symbol}</span>
+                          <span className="text-[10px] text-purple-400 ml-1">
+                            ({trade.exit_reason})
+                          </span>
                         </div>
-
-                        {/* Split Track: Left = Losing (-), Right = Profitable (+) */}
                         <div className="flex-1 grid grid-cols-2 gap-0 h-4 bg-cockpit-surface rounded border border-cockpit-border/50 relative overflow-hidden">
-                          {/* Left Half (Losing) */}
                           <div className="relative flex justify-end items-center border-r border-cockpit-border/80 pr-1">
                             {!isProfit && (
                               <div
@@ -850,8 +740,6 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
                               />
                             )}
                           </div>
-
-                          {/* Right Half (Profitable) */}
                           <div className="relative flex justify-start items-center pl-1">
                             {isProfit && (
                               <div
@@ -861,14 +749,12 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
                             )}
                           </div>
                         </div>
-
-                        {/* PnL Value Badge */}
                         <div
                           className={`w-24 text-right shrink-0 tabular-nums font-bold text-xs ${
                             isProfit ? "text-emerald-400" : "text-rose-400"
                           }`}
                         >
-                          {isProfit ? "+" : ""}₹{item.pnl.toFixed(2)}
+                          {isProfit ? "+" : ""}₹{trade.realized_pnl.toFixed(2)}
                         </div>
                       </div>
                     );
