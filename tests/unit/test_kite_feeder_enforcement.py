@@ -209,7 +209,7 @@ def test_kite_oauth_callback_subscribes_all_tokens_and_starts_streaming(mock_eng
     mock_broker.start = AsyncMock()
     engine.broker = mock_broker
 
-    with patch("api_bridge.routes.settings_control.persist_env_updates") as mock_persist:
+    with patch("api_bridge.routes.settings_control.persist_env_updates") as mock_persist, patch("os.kill"):
         resp = client.get(
             "/api/v1/kite/callback?request_token=test_oauth_request_tok&action=login&status=success",
             follow_redirects=False,
@@ -364,7 +364,7 @@ def test_push_token_api_endpoint(mock_engine_and_client):
     engine.auth_manager = mock_auth
 
     mock_ticker_instance = MagicMock()
-    with patch("kiteconnect.KiteTicker", return_value=mock_ticker_instance):
+    with patch("kiteconnect.KiteTicker", return_value=mock_ticker_instance), patch("os.kill"):
         resp = client.post(
             "/api/v1/kite/push-token",
             json={"access_token": "remote_pushed_access_token_123"},
@@ -375,6 +375,18 @@ def test_push_token_api_endpoint(mock_engine_and_client):
         assert data["status"] == "ok"
         assert "Kite token activated" in data["message"]
         mock_auth.save_access_token.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_push_token_schedules_sigterm_respawn():
+    """Verifies graceful worker SIGTERM respawn task sends signal.SIGTERM after delay without blocking."""
+    import os
+    import signal
+    from api_bridge.routes.settings_control import _delayed_worker_sigterm
+
+    with patch("os.kill") as mock_kill:
+        await _delayed_worker_sigterm(delay_sec=0.01)
+        mock_kill.assert_called_once_with(os.getpid(), signal.SIGTERM)
 
 
 def test_root_callback_redirects_to_api_v1(mock_engine_and_client):

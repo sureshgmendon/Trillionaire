@@ -152,6 +152,48 @@ async def get_sentinel_summary(engine: TrillionaireEngine = Depends(get_engine))
     return await engine.sentinel.get_sentinel_summary_async()
 
 
+@router.get("/sentinel/autopsy")
+async def get_trade_autopsy(engine: TrillionaireEngine = Depends(get_engine)) -> Dict[str, Any]:
+    """Returns latest Gemini Trade Autopsy coaching report (or computes on-demand if none persisted today)."""
+    from sentinel.news_triage.trade_autopsy import (
+        generate_daily_trade_autopsy,
+        load_latest_trade_autopsy,
+    )
+
+    existing = load_latest_trade_autopsy()
+    if existing is not None:
+        return existing
+
+    closed = list(getattr(engine.order_manager, "closed_trades", []))
+    st = engine.get_status()
+    return await generate_daily_trade_autopsy(
+        closed_trades=closed,
+        funnel_metrics=st.get("funnel_metrics"),
+        daily_mtm=float(st.get("daily_total_mtm", 0.0)),
+        realized_pnl=float(st.get("daily_realized_pnl", 0.0)),
+        allocated_capital=float(st.get("allocated_capital", 100000.0)),
+        send_telegram=False,
+    )
+
+
+@router.post("/sentinel/autopsy/run", dependencies=[Depends(verify_admin_api_key)])
+async def run_trade_autopsy_now(engine: TrillionaireEngine = Depends(get_engine)) -> Dict[str, Any]:
+    """Triggers immediate generation & persistence of today's Trade Autopsy coaching report."""
+    from sentinel.news_triage.trade_autopsy import generate_daily_trade_autopsy
+
+    closed = list(getattr(engine.order_manager, "closed_trades", []))
+    st = engine.get_status()
+    report = await generate_daily_trade_autopsy(
+        closed_trades=closed,
+        funnel_metrics=st.get("funnel_metrics"),
+        daily_mtm=float(st.get("daily_total_mtm", 0.0)),
+        realized_pnl=float(st.get("daily_realized_pnl", 0.0)),
+        allocated_capital=float(st.get("allocated_capital", 100000.0)),
+        send_telegram=True,
+    )
+    return report
+
+
 @router.get("/positions")
 async def get_active_positions(engine: TrillionaireEngine = Depends(get_engine)) -> List[Dict[str, Any]]:
     """Returns active intraday positions with entry prices, SL/Target, LTP, and unrealized PnL."""

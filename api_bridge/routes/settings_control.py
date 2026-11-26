@@ -1,4 +1,6 @@
+import asyncio
 import os
+import signal
 """
 Trillionaire API Bridge - Settings & Engine Lifecycle Control REST Endpoints
 Provides administrative control over runtime configuration, credentials, capital tiers,
@@ -8,7 +10,7 @@ and engine startup/shutdown directly from the Next.js Cockpit.
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from loguru import logger
 
@@ -357,12 +359,30 @@ async def kite_oauth_login() -> RedirectResponse:
     return RedirectResponse(url=kite_login_url, status_code=status.HTTP_302_FOUND)
 
 
+async def _delayed_worker_sigterm(delay_sec: float = 1.0) -> None:
+    """Waits briefly so the HTTP response flushes before triggering Docker restart via SIGTERM."""
+    await asyncio.sleep(delay_sec)
+    logger.warning("[WORKER RESPAWN] Sending SIGTERM so container restarts with fresh KiteTicker reactor.")
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
+def _schedule_worker_respawn(delay_sec: float = 1.0) -> bool:
+    """Schedules graceful SIGTERM worker respawn on the active asyncio event loop."""
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_delayed_worker_sigterm(delay_sec=delay_sec))
+        return True
+    except RuntimeError:
+        return False
+
+
 async def _handle_kite_oauth_callback(
     request_token: Optional[str],
     status_param: Optional[str],
     action: Optional[str],
     engine: TrillionaireEngine,
-) -> RedirectResponse:
+    response_format: Optional[str] = None,
+) -> Any:
     """
     Exchanges request_token for Kite Connect access_token, persists to Redis & disk,
     switches data_feeder to ZERODHA_KITE, restarts engine if running, and redirects to dashboard.
@@ -419,6 +439,16 @@ async def _handle_kite_oauth_callback(
         except Exception:
             pass
 
+        respawn_scheduled = _schedule_worker_respawn(delay_sec=1.0)
+        if response_format == "json":
+            return JSONResponse(
+                status_code=status.HTTP_200_OK,
+                content={
+                    "status": "ok",
+                    "message": "Token saved; respawning engine worker for fresh KiteTicker reactor",
+                    "respawn_scheduled": respawn_scheduled,
+                },
+            )
         return RedirectResponse(url="/?kite_auth=success", status_code=status.HTTP_302_FOUND)
 
     except Exception as e:
@@ -431,10 +461,11 @@ async def generic_oauth_callback(
     request_token: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
     action: Optional[str] = Query(None),
+    format: Optional[str] = Query(None),
     engine: TrillionaireEngine = Depends(get_engine),
-) -> RedirectResponse:
+) -> Any:
     """Zerodha Kite Connect redirect callback (/api/v1/callback)."""
-    return await _handle_kite_oauth_callback(request_token, status, action, engine)
+    return await _handle_kite_oauth_callback(request_token, status, action, engine, response_format=format)
 
 
 @router.get("/kite/callback")
@@ -442,10 +473,11 @@ async def kite_oauth_callback(
     request_token: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
     action: Optional[str] = Query(None),
+    format: Optional[str] = Query(None),
     engine: TrillionaireEngine = Depends(get_engine),
-) -> RedirectResponse:
+) -> Any:
     """Zerodha Kite Connect redirect callback (/api/v1/kite/callback)."""
-    return await _handle_kite_oauth_callback(request_token, status, action, engine)
+    return await _handle_kite_oauth_callback(request_token, status, action, engine, response_format=format)
 
 
 @router.get("/auth/callback")
@@ -453,10 +485,11 @@ async def auth_oauth_callback(
     request_token: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
     action: Optional[str] = Query(None),
+    format: Optional[str] = Query(None),
     engine: TrillionaireEngine = Depends(get_engine),
-) -> RedirectResponse:
+) -> Any:
     """Alternative Zerodha Kite Connect redirect callback (/api/v1/auth/callback)."""
-    return await _handle_kite_oauth_callback(request_token, status, action, engine)
+    return await _handle_kite_oauth_callback(request_token, status, action, engine, response_format=format)
 
 
 @router.post("/kite/push-token", dependencies=[Depends(verify_admin_api_key)])
@@ -534,9 +567,12 @@ async def push_kite_token(
     except Exception as e:
         logger.debug(f"[PUSH TOKEN] Snapshot broadcast: {e}")
 
+    respawn_scheduled = _schedule_worker_respawn(delay_sec=1.0)
+
     return {
         "status": "ok",
-        "message": "Kite token activated and KiteTicker stream online",
+        "message": "Kite token activated — token saved; respawning engine worker for fresh KiteTicker reactor",
+        "respawn_scheduled": respawn_scheduled,
         "active_tokens": len(resolved_tokens),
         "engine_running": engine.is_running,
         "trading_mode": engine.trading_mode.value,

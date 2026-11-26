@@ -149,12 +149,47 @@ class WeekdayMarketScheduler:
         )
         return flattened_orders
 
+    async def generate_daily_trade_autopsy(self, trade_date: Optional[date] = None) -> Optional[Dict[str, Any]]:
+        """Generates the 03:35 PM IST Gemini post-market Trade Autopsy report."""
+        from sentinel.news_triage.trade_autopsy import generate_daily_trade_autopsy
+
+        target_date = trade_date or datetime.now(IST_TZ).date()
+        try:
+            om = getattr(self.engine, "order_manager", None)
+            closed = list(getattr(om, "closed_trades", [])) if om else []
+            rg = getattr(self.engine, "risk_gatekeeper", None)
+            realized = (
+                round(sum(t.realized_pnl for t in closed), 2)
+                if closed
+                else float(getattr(rg, "realized_daily_pnl", 0.0))
+            )
+            daily_mtm = float(rg.get_total_daily_mtm()) if rg else realized
+            allocated = float(getattr(rg, "allocated_capital", 100000.0)) if rg else 100000.0
+            funnel = dict(getattr(self.engine, "funnel_metrics", {}))
+            report = await generate_daily_trade_autopsy(
+                closed_trades=closed,
+                funnel_metrics=funnel,
+                daily_mtm=daily_mtm,
+                realized_pnl=realized,
+                allocated_capital=allocated,
+                trade_date=target_date,
+                send_telegram=True,
+            )
+            self.last_autopsy_report = report
+            return report
+        except Exception as exc:
+            logger.error(f"[SCHEDULER 03:35 PM] Trade Autopsy generation error: {exc}")
+            return None
+
     async def trigger_post_market_stop(self, trade_date: Optional[date] = None) -> None:
         """
-        Halts real-time streaming operations at 03:35 PM IST while keeping scheduler armed.
+        Generates 03:35 PM IST Gemini Trade Autopsy coaching report and halts real-time streaming
+        while keeping scheduler armed for tomorrow.
         """
         target_date = trade_date or datetime.now(IST_TZ).date()
-        logger.info(f"[SCHEDULER 03:35 PM] Executing post-market engine shutdown for {target_date}...")
+        logger.info(f"[SCHEDULER 03:35 PM] Executing post-market autopsy & engine shutdown for {target_date}...")
+
+        await self.generate_daily_trade_autopsy(trade_date=target_date)
 
         if self.engine.is_running:
             await self.engine.stop()

@@ -19,6 +19,9 @@ uvicorn[standard]>=0.29.0
 # High-Performance In-Memory & Caching
 redis>=5.0.0
 
+# In-memory Vision Chart Rendering
+pillow>=10.0.0
+
 # Persistent Relational Storage & Async Drivers
 asyncpg>=0.29.0
 sqlalchemy[asyncio]>=2.0.29

@@ -3,12 +3,14 @@
 import React, { useState, useMemo, useEffect } from "react";
 import {
   Activity,
+  Brain,
   Download,
   ListOrdered,
   Maximize2,
   Minimize2,
   PieChart,
   Search,
+  Sparkles,
   X,
 } from "lucide-react";
 import { isIstCutoffWindow } from "@/lib/istTime";
@@ -20,6 +22,7 @@ import {
   RiskAlert,
   Signal,
   Tick,
+  TradeAutopsyReport,
 } from "@/types/telemetry";
 
 export interface PositionsAndOrdersTabsProps {
@@ -27,9 +30,13 @@ export interface PositionsAndOrdersTabsProps {
   orders: Order[];
   closedTrades?: ClosedTrade[];
   ticks?: Record<string, Tick>;
+  selectedSymbol?: string;
+  onSelectSymbol?: (symbol: string) => void;
   liveRealizedPnl?: number;
   liveUnrealizedPnl?: number;
   liveDailyMtm?: number;
+  tradeAutopsy?: TradeAutopsyReport | null;
+  onRunTradeAutopsy?: () => Promise<TradeAutopsyReport | null>;
   onExitPosition?: (symbol: string) => Promise<{ success: boolean; message?: string }>;
   onCancelOrder?: (orderId: string) => Promise<{ success: boolean; message?: string }>;
   signals?: Signal[];
@@ -89,9 +96,13 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
   orders = [],
   closedTrades = [],
   ticks = {},
+  selectedSymbol,
+  onSelectSymbol,
   liveRealizedPnl: propRealizedPnl,
   liveUnrealizedPnl: propUnrealizedPnl,
   liveDailyMtm: propDailyMtm,
+  tradeAutopsy = null,
+  onRunTradeAutopsy,
   onExitPosition,
   onCancelOrder,
 }) => {
@@ -102,6 +113,17 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
   const [cancellingOrders, setCancellingOrders] = useState<Record<string, boolean>>({});
   const [isExpanded, setIsExpanded] = useState(false);
   const [istCutoffActive, setIstCutoffActive] = useState(false);
+  const [isRunningAutopsy, setIsRunningAutopsy] = useState(false);
+
+  const handleRunAutopsy = async () => {
+    if (!onRunTradeAutopsy) return;
+    setIsRunningAutopsy(true);
+    try {
+      await onRunTradeAutopsy();
+    } finally {
+      setIsRunningAutopsy(false);
+    }
+  };
 
   useEffect(() => {
     const sync = () => setIstCutoffActive(isIstCutoffWindow());
@@ -629,8 +651,18 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
                   const isTriggerPending = ord.status === "TRIGGER PENDING";
                   const isCancelling = !!cancellingOrders[ord.order_id];
 
+                  const isSelected = selectedSymbol === sym;
+
                   return (
-                    <tr key={`pending-${ord.order_id}`} className="hover:bg-cockpit-surface/50 transition">
+                    <tr
+                      key={`pending-${ord.order_id}`}
+                      onClick={() => onSelectSymbol?.(sym)}
+                      className={`cursor-pointer transition ${
+                        isSelected
+                          ? "bg-cockpit-blue/15 border-l-2 border-cockpit-blue"
+                          : "hover:bg-cockpit-surface/60"
+                      }`}
+                    >
                       <td className="py-2.5 px-3 text-cockpit-muted whitespace-nowrap">
                         {formatIstTime(ord.created_at_ist)}
                       </td>
@@ -679,7 +711,10 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
                           {onCancelOrder && (
                             <button
                               type="button"
-                              onClick={() => handleCancelOrder(ord.order_id)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleCancelOrder(ord.order_id);
+                              }}
                               disabled={isCancelling}
                               className="px-2 py-0.5 rounded text-[10px] font-bold border bg-rose-500/15 hover:bg-rose-500/30 text-rose-300 border-rose-500/40 transition"
                             >
@@ -729,8 +764,18 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
                   const isRejected = ord.status === "REJECTED";
                   const reasonBadge = ord.rejection_reason || ord.exit_reason;
 
+                  const isSelected = selectedSymbol === ord.tradingsymbol;
+
                   return (
-                    <tr key={ord.order_id} className="hover:bg-cockpit-surface/50 transition">
+                    <tr
+                      key={ord.order_id}
+                      onClick={() => onSelectSymbol?.(ord.tradingsymbol)}
+                      className={`cursor-pointer transition ${
+                        isSelected
+                          ? "bg-cockpit-blue/15 border-l-2 border-cockpit-blue"
+                          : "hover:bg-cockpit-surface/60"
+                      }`}
+                    >
                       <td className="py-2 px-3 text-cockpit-muted whitespace-nowrap">
                         {formatIstTime(ord.created_at_ist)}
                       </td>
@@ -832,8 +877,18 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
                       const isShort = item.qty < 0;
                       const isExiting = !!exitingSymbols[item.instrument];
 
+                      const isSelected = selectedSymbol === item.instrument;
+
                       return (
-                        <tr key={item.key} className="hover:bg-cockpit-surface/50 transition">
+                        <tr
+                          key={item.key}
+                          onClick={() => onSelectSymbol?.(item.instrument)}
+                          className={`cursor-pointer transition ${
+                            isSelected
+                              ? "bg-cockpit-blue/15 border-l-2 border-cockpit-blue"
+                              : "hover:bg-cockpit-surface/60"
+                          }`}
+                        >
                           <td className="py-2 px-3">
                             <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-500/20 text-purple-300 border border-purple-500/40">
                               {item.product}
@@ -903,7 +958,10 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
                               {item.isOpen && onExitPosition && (
                                 <button
                                   type="button"
-                                  onClick={() => handleExitPosition(item.instrument)}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleExitPosition(item.instrument);
+                                  }}
                                   disabled={isExiting}
                                   className={`px-2 py-0.5 rounded text-[10px] font-bold border transition ${
                                     isExiting
@@ -990,10 +1048,14 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
                       maxAbsPnl > 0
                         ? Math.min(100, (Math.abs(item.pnl) / maxAbsPnl) * 100)
                         : 0;
+                    const isSelectedBar = selectedSymbol === item.instrument;
                     return (
                       <div
                         key={`bar-${item.key}`}
-                        className="flex items-center text-xs font-mono"
+                        onClick={() => onSelectSymbol?.(item.instrument)}
+                        className={`flex items-center text-xs font-mono cursor-pointer rounded px-1 py-0.5 transition ${
+                          isSelectedBar ? "bg-cockpit-blue/15 ring-1 ring-cockpit-blue/40" : "hover:bg-cockpit-surface/60"
+                        }`}
                       >
                         <div className="w-32 sm:w-40 shrink-0 truncate font-semibold text-white">
                           <span>{item.instrument}</span>
@@ -1030,6 +1092,61 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
                     );
                   })}
                 </div>
+              </div>
+
+              {/* Post-Market Gemini Trade Autopsy Coach Card */}
+              <div className="p-3 border-t border-cockpit-border bg-slate-950/60 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-1.5 text-[11px] font-mono font-bold text-cyan-300">
+                    <Brain className="h-3.5 w-3.5 text-cyan-400" />
+                    <span>AI TRADE AUTOPSY COACH</span>
+                    {tradeAutopsy && (
+                      <span className="text-[9px] px-1.5 py-0.2 rounded bg-cockpit-surface border border-cockpit-border text-cockpit-muted font-normal">
+                        {tradeAutopsy.trade_date}
+                      </span>
+                    )}
+                  </div>
+                  {onRunTradeAutopsy && (
+                    <button
+                      type="button"
+                      onClick={handleRunAutopsy}
+                      disabled={isRunningAutopsy}
+                      className="px-2 py-1 rounded bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/40 text-cyan-300 text-[10px] font-mono font-semibold flex items-center space-x-1 transition"
+                    >
+                      <Sparkles className="h-3 w-3" />
+                      <span>{isRunningAutopsy ? "Analyzing..." : "Generate Autopsy"}</span>
+                    </button>
+                  )}
+                </div>
+
+                {tradeAutopsy ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px] font-mono">
+                    <div className="p-2 rounded bg-cockpit-surface/70 border border-cockpit-border space-y-1">
+                      <div className="text-[10px] uppercase text-cockpit-muted font-bold">
+                        Scorecard & Diagnosis (WR {tradeAutopsy.session_scorecard.win_rate_pct}% • PF {tradeAutopsy.session_scorecard.profit_factor})
+                      </div>
+                      {tradeAutopsy.loss_and_trap_diagnosis.map((d, idx) => (
+                        <div key={`diag-${idx}`} className="text-slate-300 leading-snug">
+                          • {d}
+                        </div>
+                      ))}
+                    </div>
+                    <div className="p-2 rounded bg-cockpit-surface/70 border border-cockpit-border space-y-1">
+                      <div className="text-[10px] uppercase text-cockpit-muted font-bold">
+                        Next-Session Recommendations
+                      </div>
+                      {tradeAutopsy.parameter_recommendations.map((r, idx) => (
+                        <div key={`rec-${idx}`} className="text-emerald-300 leading-snug">
+                          • {r}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-[10px] font-mono text-cockpit-muted">
+                    Scheduled automatically at 03:35 PM IST post-square-off, or click Generate Autopsy for instant review.
+                  </div>
+                )}
               </div>
             </div>
           )}

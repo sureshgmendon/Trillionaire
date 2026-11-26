@@ -19,7 +19,7 @@ from shared.constants import (
     FORCE_SQUARE_OFF_TRIGGER,
     IST_TZ,
 )
-from shared.enums import Side
+from shared.enums import Side, TradingMode
 from shared.schemas import Position, Signal, Tick
 from trading_engine.core.event_bus import EventBus, RiskAlertEvent, TickEvent, bus
 
@@ -42,10 +42,14 @@ class PortfolioRiskGatekeeper:
         max_mis_leverage: Optional[float] = None,
         flatten_handler: Optional[FlattenCallback] = None,
         enable_profit_lock: Optional[bool] = None,
+        trading_mode: TradingMode = TradingMode.LIVE,
+        disable_daily_loss_limit_in_paper: Optional[bool] = None,
     ):
         self.bus = event_bus or bus
         self.flatten_handler = flatten_handler
         self._explicit_enable_profit_lock = enable_profit_lock
+        self.trading_mode = trading_mode
+        self._explicit_disable_loss_in_paper = disable_daily_loss_limit_in_paper
 
         # Load tier configuration
         tier_config = self._load_tier_config(tier_name)
@@ -179,6 +183,17 @@ class PortfolioRiskGatekeeper:
     @enable_profit_lock.setter
     def enable_profit_lock(self, value: Optional[bool]) -> None:
         self._explicit_enable_profit_lock = value
+
+    @property
+    def disable_daily_loss_limit_in_paper(self) -> bool:
+        """Whether -1.5% daily drawdown kill-switch is bypassed in PAPER mode."""
+        if self._explicit_disable_loss_in_paper is not None:
+            return bool(self._explicit_disable_loss_in_paper)
+        return bool(getattr(settings, "disable_daily_loss_limit_in_paper", True))
+
+    @disable_daily_loss_limit_in_paper.setter
+    def disable_daily_loss_limit_in_paper(self, value: Optional[bool]) -> None:
+        self._explicit_disable_loss_in_paper = value
 
     def close_position(self, symbol: str, realized_pnl: float) -> Optional[Position]:
         """Removes an active position and updates realized daily PnL."""
@@ -317,8 +332,13 @@ class PortfolioRiskGatekeeper:
         total_daily_mtm = self.get_total_daily_mtm()
 
         # 2. Hard Daily MTM Kill-Switch (-1.5% of allocated capital)
+        # Strictly enforced in LIVE mode; optionally bypassed in PAPER mode for full-day forward testing.
+        mode_val = getattr(self.trading_mode, "value", str(self.trading_mode))
+        enforce_daily_loss_limit = (mode_val == TradingMode.LIVE.value) or not (
+            mode_val == TradingMode.PAPER.value and self.disable_daily_loss_limit_in_paper
+        )
         max_daily_loss_inr = -1.0 * (self.allocated_capital * (self.max_daily_loss_pct / 100.0))
-        if not self.kill_switch_active and total_daily_mtm <= max_daily_loss_inr:
+        if enforce_daily_loss_limit and not self.kill_switch_active and total_daily_mtm <= max_daily_loss_inr:
             self.kill_switch_active = True
             self.circuit_breaker_reason = (
                 f"Daily MTM drawdown Rs.{total_daily_mtm:,.2f} breached -{self.max_daily_loss_pct}% limit (Rs.{max_daily_loss_inr:,.2f})"

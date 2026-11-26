@@ -21,7 +21,9 @@ import {
   TelemetryEnvelope,
   Tick,
   TimeframeCode,
+  TradeAutopsyReport,
 } from "@/types/telemetry";
+import { isMarketHoursIST } from "@/lib/istTime";
 
 export function getApiBaseUrl(): string {
   const envUrl = process.env.NEXT_PUBLIC_API_URL;
@@ -74,12 +76,19 @@ export function useTrillionaireStream() {
   const [riskAlerts, setRiskAlerts] = useState<RiskAlert[]>([]);
   const [profiles, setProfiles] = useState<StockProfile[]>([]);
   const [sentinelSummary, setSentinelSummary] = useState<SentinelSummary | null>(null);
+  const [tradeAutopsy, setTradeAutopsy] = useState<TradeAutopsyReport | null>(null);
   const [selectedSymbol, setSelectedSymbol] = useState<string>("RELIANCE");
   const [selectedTimeframe, setSelectedTimeframe] = useState<TimeframeCode>("M5");
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAttemptsRef = useRef<number>(0);
   const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const lastTickAtRef = useRef<number>(Date.now());
+  const statusRef = useRef<EngineStatus | null>(null);
+
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
 
   // 1. Initial REST Hydration
   const fetchInitialState = useCallback(async () => {
@@ -197,7 +206,8 @@ export function useTrillionaireStream() {
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current);
     }
-    const delay = Math.min(1000 * Math.pow(1.5, reconnectAttemptsRef.current), 10000);
+    const attempt = reconnectAttemptsRef.current;
+    const delay = attempt === 0 ? 1000 : attempt === 1 ? 2000 : 5000;
     reconnectAttemptsRef.current += 1;
     reconnectTimerRef.current = setTimeout(() => {
       connectWebSocket();
@@ -219,6 +229,7 @@ export function useTrillionaireStream() {
           setClosedTrades(payload.closed_trades);
         }
         if (payload.latest_ticks && Object.keys(payload.latest_ticks).length > 0) {
+          lastTickAtRef.current = Date.now();
           setTicks((prev) => ({ ...prev, ...payload.latest_ticks }));
         }
         if (payload.recent_signals) setSignals(payload.recent_signals);
@@ -235,6 +246,7 @@ export function useTrillionaireStream() {
       }
       case "TICK": {
         const tick = envelope.payload;
+        lastTickAtRef.current = Date.now();
         setTicks((prev) => ({ ...prev, [tick.tradingsymbol]: tick }));
         break;
       }
@@ -471,6 +483,26 @@ export function useTrillionaireStream() {
     }
   }, []);
 
+  const runTradeAutopsy = useCallback(async () => {
+    try {
+      const apiBase = getApiBaseUrl();
+      const res = await fetch(`${apiBase}/api/v1/sentinel/autopsy/run`, {
+        method: "POST",
+        headers: {
+          "X-API-Key": ADMIN_KEY,
+        },
+      });
+      if (res.ok) {
+        const data: TradeAutopsyReport = await res.json();
+        setTradeAutopsy(data);
+        return data;
+      }
+    } catch (e) {
+      console.warn("[AUTOPSY] Run error:", e);
+    }
+    return null;
+  }, []);
+
   useEffect(() => {
     fetchInitialState();
     connectWebSocket();
@@ -479,8 +511,30 @@ export function useTrillionaireStream() {
       refreshSentinelSummary();
     }, 5 * 60 * 1000);
 
+    // 15s Market-Hours Stale-Tick Watchdog (09:15-15:30 IST Mon-Fri)
+    const staleTickWatchdog = setInterval(() => {
+      if (!isMarketHoursIST()) return;
+      const summaryLabel = statusRef.current?.milestones?.summary_label;
+      if (summaryLabel === "5/5 READY" && Date.now() - lastTickAtRef.current >= 15000) {
+        console.warn("[WATCHDOG] 15s stale ticks while 5/5 READY — reconnecting WS and refreshing status");
+        lastTickAtRef.current = Date.now();
+        if (wsRef.current) {
+          try {
+            wsRef.current.onclose = null;
+            wsRef.current.close();
+          } catch {
+            // ignore
+          }
+          wsRef.current = null;
+        }
+        connectWebSocket();
+        fetchInitialState();
+      }
+    }, 5000);
+
     return () => {
       clearInterval(sentinelInterval);
+      clearInterval(staleTickWatchdog);
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
       }
@@ -609,6 +663,7 @@ export function useTrillionaireStream() {
     riskAlerts,
     profiles,
     sentinelSummary,
+    tradeAutopsy,
     selectedSymbol,
     setSelectedSymbol,
     selectedTimeframe,
@@ -627,5 +682,6 @@ export function useTrillionaireStream() {
     overrideSentinelLock,
     refreshState: fetchInitialState,
     refreshSentinelSummary,
+    runTradeAutopsy,
   };
 }

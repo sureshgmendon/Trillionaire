@@ -4,7 +4,7 @@ Strict Pydantic v2 data models for market data, profiling, sentinel signals, and
 """
 
 from datetime import datetime
-from typing import Optional
+from typing import Any, Dict, Optional
 from zoneinfo import ZoneInfo
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -141,6 +141,7 @@ class Signal(StrictBaseModel):
     confidence: float = Field(..., ge=0.0, le=1.0, description="Strategy confluence score [0, 1]")
     strategy_name: str = Field(..., description="Strategy name producing the signal")
     generated_at_ist: datetime = Field(..., description="Signal emission timestamp in IST")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Signal diagnostics & Vision trap filter metadata")
 
     @field_validator("generated_at_ist", mode="before")
     @classmethod

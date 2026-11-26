@@ -26,6 +26,7 @@ export default function CockpitPage() {
     riskAlerts,
     profiles,
     sentinelSummary,
+    tradeAutopsy,
     selectedSymbol,
     setSelectedSymbol,
     selectedTimeframe,
@@ -43,6 +44,7 @@ export default function CockpitPage() {
     pauseTrading,
     resumeTrading,
     refreshState,
+    runTradeAutopsy,
   } = useTrillionaireStream();
 
   const [isReplayModalOpen, setIsReplayModalOpen] = useState(false);
@@ -158,9 +160,13 @@ export default function CockpitPage() {
               orders={orders}
               closedTrades={closedTrades}
               ticks={ticks}
+              selectedSymbol={selectedSymbol}
+              onSelectSymbol={setSelectedSymbol}
               liveRealizedPnl={liveRealizedPnl}
               liveUnrealizedPnl={liveUnrealizedPnl}
               liveDailyMtm={liveDailyMtm}
+              tradeAutopsy={tradeAutopsy}
+              onRunTradeAutopsy={runTradeAutopsy}
               onExitPosition={exitPosition}
               onCancelOrder={cancelOrder}
               signals={signals}

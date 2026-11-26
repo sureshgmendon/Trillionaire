@@ -74,6 +74,10 @@ class Settings(BaseSettings):
         default=False,
         description="Enable intraday profit-locking trailing floor (+1.2% trigger / +0.6% floor)",
     )
+    disable_daily_loss_limit_in_paper: bool = Field(
+        default=True,
+        description="Disable -1.5% daily loss circuit breaker in PAPER mode so forward tests run until 15:10 IST",
+    )
 
     # Logging & Observability
     log_level: str = Field(default="INFO", description="Loguru logging level")

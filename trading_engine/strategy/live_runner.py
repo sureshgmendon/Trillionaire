@@ -8,6 +8,7 @@ Enforces:
 Emits SignalEvent onto the typed EventBus upon confirmation.
 """
 
+from collections import deque
 from datetime import datetime, time
 import json
 from pathlib import Path
@@ -19,6 +20,7 @@ from research_lab.backtester.strategies import (
     BaseMicroStrategy,
     get_strategy_for_regime,
 )
+from sentinel.news_triage.vision_filter import VisionTrapFilter
 from sentinel.orchestrator import SentinelOrchestrator
 from shared.constants import IST_TZ
 from shared.enums import ClusterRegime, SentinelStatus, Side, Timeframe
@@ -26,6 +28,7 @@ from shared.schemas import Candle, NewsSentinelTag, Signal, StockProfile, Tick
 from trading_engine.core.event_bus import (
     CandleCloseEvent,
     EventBus,
+    RiskAlertEvent,
     SignalEvent,
     TickEvent,
     bus,
@@ -47,11 +50,13 @@ class LiveStrategyRunner:
         sentinel_orchestrator: Optional[SentinelOrchestrator] = None,
         anomaly_detector: Optional[AnomalyDetector] = None,
         profiles_path: Path = STOCK_PROFILES_DEFAULT_PATH,
+        vision_filter: Optional[VisionTrapFilter] = None,
     ):
         self.bus = event_bus or bus
         self.sentinel = sentinel_orchestrator or SentinelOrchestrator()
         self.anomaly_detector = anomaly_detector
         self.profiles_path = profiles_path
+        self.vision_filter = vision_filter or VisionTrapFilter()
 
         # Stock profiles: tradingsymbol -> StockProfile
         self.profiles: Dict[str, StockProfile] = {}
@@ -62,6 +67,8 @@ class LiveStrategyRunner:
 
         # Latest closed candles: (symbol, Timeframe) -> Candle
         self._latest_candles: Dict[Tuple[str, Timeframe], Candle] = {}
+        # Rolling 60 M5 candle history per symbol for Gemini Vision chart trap inspection
+        self._m5_history: Dict[str, deque[Candle]] = {}
         # Previous closed candles for trend change checks
         self._prev_candles: Dict[str, Dict[str, Any]] = {}
 
@@ -96,6 +103,7 @@ class LiveStrategyRunner:
             "passed_stock_rule": 0,
             "passed_sector_filter": 0,
             "blocked_by_market_filter": 0,
+            "blocked_by_vision_filter": 0,
             "signals_emitted": 0,
         }
 
@@ -190,6 +198,9 @@ class LiveStrategyRunner:
         # Micro-strategies strictly evaluate on M5 interval
         if tf != Timeframe.M5:
             return None
+
+        m5_hist = self._m5_history.setdefault(sym, deque(maxlen=60))
+        m5_hist.append(candle)
 
         # Check if trading strategy evaluation is paused
         if self.is_paused:
@@ -346,6 +357,33 @@ class LiveStrategyRunner:
                         f"(Close={nifty_candle.close:.2f}, VWAP={nifty_candle.vwap:.2f}, EMA20={nifty_ema_20:.2f})"
                     )
                     return None
+
+            # Gate 5: Pre-Order Gemini Vision Chart Trap Filter (only runs on confirmed signals)
+            vision_res = await self.vision_filter.evaluate_signal(
+                signal=signal,
+                candles=list(self._m5_history.get(sym, [candle])),
+                or_levels=or_range,
+            )
+            signal.metadata["vision_filter"] = vision_res
+            decision_label = "APPROVED" if vision_res.get("approved", True) else "VETOED"
+            vision_msg = (
+                f"[VISION FILTER] {decision_label} {sym} {signal.side.value} "
+                f"(Conf={vision_res.get('confidence', 0.0):.2f}): {vision_res.get('reason', '')}"
+            )
+            logger.info(vision_msg)
+            await self.bus.publish(
+                RiskAlertEvent(
+                    symbol=sym,
+                    level="INFO" if vision_res.get("approved", True) else "WARNING",
+                    message=vision_msg,
+                    timestamp_ist=candle.timestamp_ist,
+                )
+            )
+            if not vision_res.get("approved", True):
+                self.funnel_metrics["blocked_by_vision_filter"] = (
+                    self.funnel_metrics.get("blocked_by_vision_filter", 0) + 1
+                )
+                return None
 
             self.funnel_metrics["signals_emitted"] += 1
             if not passed_stock:

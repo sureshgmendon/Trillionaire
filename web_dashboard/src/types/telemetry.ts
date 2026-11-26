@@ -169,7 +169,28 @@ export interface FunnelMetrics {
   candles_evaluated: number;
   passed_stock_rule: number;
   passed_sector_filter: number;
+  blocked_by_market_filter?: number;
+  blocked_by_vision_filter?: number;
   signals_emitted: number;
+}
+
+export interface TradeAutopsyReport {
+  trade_date: string;
+  generated_at_ist: string;
+  source: string;
+  session_scorecard: {
+    total_trades: number;
+    winning_trades: number;
+    losing_trades: number;
+    win_rate_pct: number;
+    profit_factor: number;
+    net_post_tax_pnl_inr: number;
+    daily_mtm_inr: number;
+    return_pct: number;
+  };
+  loss_and_trap_diagnosis: string[];
+  parameter_recommendations: string[];
+  markdown_report: string;
 }
 
 export interface PipelineMilestoneItem {

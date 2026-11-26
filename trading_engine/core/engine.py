@@ -82,6 +82,7 @@ class TrillionaireEngine:
         # 4. Portfolio Risk Gatekeeper
         self.risk_gatekeeper = risk_gatekeeper or PortfolioRiskGatekeeper(
             event_bus=self.bus,
+            trading_mode=self.trading_mode,
         )
 
         # 5. Broker Adapter (PaperBroker for PAPER/REPLAY, KiteBroker for LIVE)
@@ -771,8 +772,10 @@ class TrillionaireEngine:
         }
 
     def set_trading_mode(self, mode: TradingMode) -> None:
-        """Updates trading mode dynamically and syncs broker reconciler & execution routing."""
+        """Updates trading mode dynamically and syncs risk gatekeeper, broker reconciler, & execution routing."""
         self.trading_mode = mode
+        if hasattr(self.risk_gatekeeper, "trading_mode"):
+            self.risk_gatekeeper.trading_mode = mode
         if hasattr(self.broker, "trading_mode"):
             self.broker.trading_mode = mode
         if mode == TradingMode.LIVE:
