@@ -294,7 +294,12 @@ def test_api_closed_trades_candles_sentinel_override_and_settings(tmp_path, monk
     bus = EventBus()
     risk_guard = PortfolioRiskGatekeeper(event_bus=bus, allocated_capital=150000.0)
     broker = PaperBroker(event_bus=bus)
-    om = OrderManager(event_bus=bus, broker=broker, risk_gatekeeper=risk_guard)
+    om = OrderManager(
+        event_bus=bus,
+        broker=broker,
+        risk_gatekeeper=risk_guard,
+        enable_partial_booking=False,
+    )
     engine = TrillionaireEngine(
         trading_mode=TradingMode.PAPER,
         event_bus=bus,
@@ -427,7 +432,12 @@ def test_cancel_pending_order_endpoint():
     bus = EventBus()
     risk_guard = PortfolioRiskGatekeeper(event_bus=bus, allocated_capital=150000.0)
     broker = PaperBroker(event_bus=bus)
-    om = OrderManager(event_bus=bus, broker=broker, risk_gatekeeper=risk_guard)
+    om = OrderManager(
+        event_bus=bus,
+        broker=broker,
+        risk_gatekeeper=risk_guard,
+        enable_partial_booking=False,
+    )
     engine = TrillionaireEngine(
         trading_mode=TradingMode.PAPER,
         event_bus=bus,
@@ -511,7 +521,12 @@ async def test_closed_trade_preserves_initial_sl_after_breakeven():
     bus = EventBus()
     risk_guard = PortfolioRiskGatekeeper(event_bus=bus, allocated_capital=200000.0)
     broker = PaperBroker(event_bus=bus)
-    om = OrderManager(event_bus=bus, broker=broker, risk_gatekeeper=risk_guard)
+    om = OrderManager(
+        event_bus=bus,
+        broker=broker,
+        risk_gatekeeper=risk_guard,
+        enable_partial_booking=False,
+    )
 
     t0 = datetime(2026, 4, 15, 9, 40, 0, tzinfo=IST_TZ)
     broker.set_latest_tick(

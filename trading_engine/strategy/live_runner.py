@@ -103,6 +103,7 @@ class LiveStrategyRunner:
             "passed_stock_rule": 0,
             "passed_sector_filter": 0,
             "blocked_by_market_filter": 0,
+            "blocked_by_lunch_filter": 0,
             "blocked_by_vision_filter": 0,
             "signals_emitted": 0,
         }
@@ -214,6 +215,17 @@ class LiveStrategyRunner:
 
         # Track evaluated candles in signal funnel
         self.funnel_metrics["candles_evaluated"] += 1
+
+        # Strategy Regime Toggles (persisted in Settings & Keys)
+        if profile.cluster_regime == ClusterRegime.TREND_MOMENTUM and not getattr(settings, "enable_trend_strategy", True):
+            logger.debug(f"[STRATEGY TOGGLE] TREND_MOMENTUM disabled; skipping {sym}")
+            return None
+        if profile.cluster_regime == ClusterRegime.MEAN_REVERSION and not getattr(settings, "enable_mean_reversion_strategy", True):
+            logger.debug(f"[STRATEGY TOGGLE] MEAN_REVERSION disabled; skipping {sym}")
+            return None
+        if profile.cluster_regime == ClusterRegime.HIGH_RVOL_BREAKOUT and not getattr(settings, "enable_rvol_breakout_strategy", True):
+            logger.debug(f"[STRATEGY TOGGLE] HIGH_RVOL_BREAKOUT disabled; skipping {sym}")
+            return None
 
         # 1. Gate 1: Pre-Market Sentinel Risk Assessment
         tag = self.get_sentinel_tag(sym)
@@ -339,6 +351,24 @@ class LiveStrategyRunner:
         self._prev_candles[sym] = stock_bar
 
         if signal is not None:
+            # Choppy-Lunch Volume Filter: Keep scanning 100 stocks, require RVOL >= 2.0 for new entries in 11:45-13:15 IST
+            bar_ist = (
+                candle.timestamp_ist.astimezone(IST_TZ)
+                if candle.timestamp_ist.tzinfo
+                else candle.timestamp_ist.replace(tzinfo=IST_TZ)
+            )
+            bar_t = bar_ist.time()
+            if getattr(settings, "enable_lunch_volume_filter", True) and time(11, 45) <= bar_t <= time(13, 15):
+                if float(candle.rvol or 0.0) < 2.0:
+                    self.funnel_metrics["blocked_by_lunch_filter"] = (
+                        self.funnel_metrics.get("blocked_by_lunch_filter", 0) + 1
+                    )
+                    logger.info(
+                        f"[LUNCH VOLUME FILTER] {sym} {signal.side.value} blocked in 11:45-13:15 IST window "
+                        f"(RVOL={float(candle.rvol or 0.0):.2f} < 2.00)"
+                    )
+                    return None
+
             # Gate 4: Broad Market (NIFTY 50) Trend Filter
             nifty_candle = self._latest_candles.get(("NIFTY 50", Timeframe.M5))
             if nifty_candle is not None and nifty_candle.vwap is not None and nifty_candle.vwap > 0:
@@ -358,32 +388,33 @@ class LiveStrategyRunner:
                     )
                     return None
 
-            # Gate 5: Pre-Order Gemini Vision Chart Trap Filter (only runs on confirmed signals)
-            vision_res = await self.vision_filter.evaluate_signal(
-                signal=signal,
-                candles=list(self._m5_history.get(sym, [candle])),
-                or_levels=or_range,
-            )
-            signal.metadata["vision_filter"] = vision_res
-            decision_label = "APPROVED" if vision_res.get("approved", True) else "VETOED"
-            vision_msg = (
-                f"[VISION FILTER] {decision_label} {sym} {signal.side.value} "
-                f"(Conf={vision_res.get('confidence', 0.0):.2f}): {vision_res.get('reason', '')}"
-            )
-            logger.info(vision_msg)
-            await self.bus.publish(
-                RiskAlertEvent(
-                    symbol=sym,
-                    level="INFO" if vision_res.get("approved", True) else "WARNING",
-                    message=vision_msg,
-                    timestamp_ist=candle.timestamp_ist,
+            # Gate 5: Pre-Order Gemini Vision Chart Trap Filter (only runs on confirmed signals when enabled)
+            if getattr(settings, "enable_vision_filter", True):
+                vision_res = await self.vision_filter.evaluate_signal(
+                    signal=signal,
+                    candles=list(self._m5_history.get(sym, [candle])),
+                    or_levels=or_range,
                 )
-            )
-            if not vision_res.get("approved", True):
-                self.funnel_metrics["blocked_by_vision_filter"] = (
-                    self.funnel_metrics.get("blocked_by_vision_filter", 0) + 1
+                signal.metadata["vision_filter"] = vision_res
+                decision_label = "APPROVED" if vision_res.get("approved", True) else "VETOED"
+                vision_msg = (
+                    f"[VISION FILTER] {decision_label} {sym} {signal.side.value} "
+                    f"(Conf={vision_res.get('confidence', 0.0):.2f}): {vision_res.get('reason', '')}"
                 )
-                return None
+                logger.info(vision_msg)
+                await self.bus.publish(
+                    RiskAlertEvent(
+                        symbol=sym,
+                        level="INFO" if vision_res.get("approved", True) else "WARNING",
+                        message=vision_msg,
+                        timestamp_ist=candle.timestamp_ist,
+                    )
+                )
+                if not vision_res.get("approved", True):
+                    self.funnel_metrics["blocked_by_vision_filter"] = (
+                        self.funnel_metrics.get("blocked_by_vision_filter", 0) + 1
+                    )
+                    return None
 
             self.funnel_metrics["signals_emitted"] += 1
             if not passed_stock:

@@ -36,6 +36,8 @@ export default function CockpitPage() {
     liveDailyMtm,
     exitPosition,
     cancelOrder,
+    modifyOrder,
+    applySettingToggle,
     triggerEmergencyFlatten,
     overrideSentinelLock,
     triggerReplay,
@@ -169,6 +171,8 @@ export default function CockpitPage() {
               onRunTradeAutopsy={runTradeAutopsy}
               onExitPosition={exitPosition}
               onCancelOrder={cancelOrder}
+              onModifyOrder={modifyOrder}
+              onApplySettingToggle={applySettingToggle}
               signals={signals}
               anomalies={anomalies}
               riskAlerts={riskAlerts}

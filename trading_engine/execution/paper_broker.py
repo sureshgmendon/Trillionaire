@@ -104,9 +104,11 @@ class PaperBroker:
                         return await self._reject_order(order, err)
                     return await self._execute_fill(order, fill_price, tick.timestamp_ist)
             else:
-                # No tick cached yet: execute marketable limit order immediately at limit price
-                fill_dt = order.created_at_ist or datetime.now(IST_TZ)
-                return await self._execute_fill(order, order.limit_price, fill_dt)
+                # Keep resting TP OCO child orders OPEN waiting for price to reach target;
+                # execute immediate marketable LIMIT entry/manual-exit orders when no tick is cached.
+                if not (order.is_exit and (order.client_order_tag or "").startswith("tp_")):
+                    fill_dt = order.created_at_ist or datetime.now(IST_TZ)
+                    return await self._execute_fill(order, order.limit_price, fill_dt)
 
         # Resting limit order (not immediately marketable)
         self.open_orders[order.order_id] = order
@@ -167,6 +169,43 @@ class PaperBroker:
             logger.info(f"[PAPER BROKER] Order cancelled: {order_id} ({order.tradingsymbol})")
             await self.bus.publish(OrderUpdateEvent(order=order))
             return order
+        return order
+
+    async def modify_order(
+        self,
+        order_id: str,
+        trigger_price: Optional[float] = None,
+        limit_price: Optional[float] = None,
+        quantity: Optional[int] = None,
+    ) -> Optional[Order]:
+        """Modifies trigger price, limit price, or quantity of a pending simulated order."""
+        order = self.open_orders.get(order_id) or self.orders.get(order_id)
+        if order is None:
+            return None
+        if order.status not in (
+            OrderStatus.OPEN,
+            OrderStatus.TRIGGER_PENDING,
+            OrderStatus.PENDING_NEW,
+        ):
+            return order
+
+        if trigger_price is not None and trigger_price > 0:
+            order.trigger_price = round(float(trigger_price), 2)
+            order.sl_price = round(float(trigger_price), 2)
+        if limit_price is not None and limit_price > 0:
+            order.limit_price = round(float(limit_price), 2)
+            if order.is_exit and (order.client_order_tag or "").startswith("tp_"):
+                order.target_price = round(float(limit_price), 2)
+        if quantity is not None and quantity > 0:
+            order.quantity = int(quantity)
+
+        self.orders[order_id] = order
+        self.open_orders[order_id] = order
+        logger.info(
+            f"[PAPER BROKER] Order modified: {order_id} ({order.tradingsymbol}) -> "
+            f"Trig={order.trigger_price}, Lim={order.limit_price}, Qty={order.quantity}"
+        )
+        await self.bus.publish(OrderUpdateEvent(order=order))
         return order
 
     async def _reject_order(self, order: Order, reason: str) -> Order:

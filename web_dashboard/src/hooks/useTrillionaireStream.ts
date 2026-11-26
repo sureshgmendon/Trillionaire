@@ -24,6 +24,7 @@ import {
   TradeAutopsyReport,
 } from "@/types/telemetry";
 import { isMarketHoursIST } from "@/lib/istTime";
+import { computeOpenPositionMetrics } from "@/lib/pnl";
 
 export function getApiBaseUrl(): string {
   const envUrl = process.env.NEXT_PUBLIC_API_URL;
@@ -94,7 +95,7 @@ export function useTrillionaireStream() {
   const fetchInitialState = useCallback(async () => {
     try {
       const apiBase = getApiBaseUrl();
-      const [statusRes, posRes, ordRes, closedRes, sentinelRes, summaryRes] = await Promise.allSettled([
+      const [statusRes, posRes, ordRes, closedRes, sentinelRes, summaryRes, autopsyRes] = await Promise.allSettled([
         fetch(`${apiBase}/api/v1/status`),
         fetch(`${apiBase}/api/v1/positions`),
         fetch(`${apiBase}/api/v1/orders`),
@@ -105,6 +106,7 @@ export function useTrillionaireStream() {
             "X-API-Key": ADMIN_KEY,
           },
         }),
+        fetch(`${apiBase}/api/v1/sentinel/autopsy?auto_generate=false`),
       ]);
 
       if (statusRes.status === "fulfilled" && statusRes.value.ok) {
@@ -133,6 +135,12 @@ export function useTrillionaireStream() {
       if (summaryRes.status === "fulfilled" && summaryRes.value.ok) {
         const summ = await summaryRes.value.json();
         setSentinelSummary(summ);
+      }
+      if (autopsyRes.status === "fulfilled" && autopsyRes.value.ok) {
+        const aut = await autopsyRes.value.json();
+        if (aut && typeof aut === "object" && aut.trade_date) {
+          setTradeAutopsy(aut);
+        }
       }
     } catch (err) {
       console.warn("[TELEMETRY REST] Initial fetch error:", err);
@@ -614,6 +622,60 @@ export function useTrillionaireStream() {
     }
   }, []);
 
+  // 7c. Modify a Pending OPEN / TRIGGER PENDING Order
+  const modifyOrder = useCallback(
+    async (orderId: string, params: { trigger_price?: number; limit_price?: number }) => {
+      try {
+        const apiBase = getApiBaseUrl();
+        const resp = await fetch(
+          `${apiBase}/api/v1/control/orders/${encodeURIComponent(orderId)}/modify`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-API-Key": ADMIN_KEY,
+            },
+            body: JSON.stringify(params),
+          }
+        );
+        if (resp.ok) {
+          await fetchInitialState();
+          return { success: true, message: "Order modified." };
+        }
+        const err = await resp.json().catch(() => ({}));
+        return { success: false, message: err.detail || "Failed to modify order" };
+      } catch (e: any) {
+        return { success: false, message: e.message || "Network error" };
+      }
+    },
+    [fetchInitialState]
+  );
+
+  // 7d. Apply Quick Toggle Action from AI Trade Autopsy
+  const applySettingToggle = useCallback(
+    async (settingKey: string, value: boolean | string) => {
+      try {
+        const apiBase = getApiBaseUrl();
+        const resp = await fetch(`${apiBase}/api/v1/settings`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-API-Key": ADMIN_KEY,
+          },
+          body: JSON.stringify({ [settingKey]: value }),
+        });
+        if (resp.ok) {
+          await fetchInitialState();
+          return { success: true };
+        }
+        return { success: false };
+      } catch {
+        return { success: false };
+      }
+    },
+    [fetchInitialState]
+  );
+
   // 8. Single Shared P&L Calculations (synchronized 1:1 between TopTelemetryBar & P&L Report)
   const liveUnrealizedPnl = (function calculateLiveUnrealized() {
     if (!positions || positions.length === 0) {
@@ -621,18 +683,8 @@ export function useTrillionaireStream() {
     }
     let total = 0;
     for (const pos of positions) {
-      const qty = pos.quantity ?? 0;
-      if (Math.abs(qty) === 0) continue;
-      const sym = (pos as any).symbol || pos.tradingsymbol;
-      const avgPrice = (pos as any).avg_price ?? pos.average_entry_price ?? 0;
-      const currentLtp = (sym && ticks[sym]?.ltp) ?? pos.ltp ?? avgPrice;
-      const isBuy = (pos.side as any) === "BUY" || qty > 0;
-
-      if (isBuy) {
-        total += (currentLtp - avgPrice) * Math.abs(qty);
-      } else {
-        total += (avgPrice - currentLtp) * Math.abs(qty);
-      }
+      if (Math.abs(pos.quantity ?? 0) === 0) continue;
+      total += computeOpenPositionMetrics(pos, ticks).unrealizedPnl;
     }
     return Math.round(total * 100) / 100;
   })();
@@ -673,6 +725,8 @@ export function useTrillionaireStream() {
     liveDailyMtm,
     exitPosition,
     cancelOrder,
+    modifyOrder,
+    applySettingToggle,
     triggerEmergencyFlatten,
     triggerReplay,
     startEngine,

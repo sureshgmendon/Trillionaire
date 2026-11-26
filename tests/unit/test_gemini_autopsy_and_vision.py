@@ -245,7 +245,7 @@ async def test_vision_filter_png_veto_and_timeout_fail_open(monkeypatch):
         new=AsyncMock(
             return_value={
                 "ok": True,
-                "model": "gemini-2.5-flash",
+                "model": "gemini-3.8-flash",
                 "data": {"approved": False, "confidence": 0.91, "reason": "Double-top resistance exhaustion"},
             }
         ),

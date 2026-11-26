@@ -39,9 +39,12 @@ class BaseMicroStrategy(ABC):
 
     @staticmethod
     def is_in_entry_window(bar_dt: datetime) -> bool:
-        """Enforces algorithmic trading session window (09:25 <= time <= 14:30 IST)."""
+        """Enforces algorithmic trading session window using persisted entry start time (09:25/09:30 - 14:30 IST)."""
+        from config.settings import settings
+
         bar_time = bar_dt.time()
-        return ENTRY_WINDOW_START <= bar_time <= ENTRY_WINDOW_END
+        start_time = getattr(settings, "effective_entry_start_time", ENTRY_WINDOW_START)
+        return start_time <= bar_time <= ENTRY_WINDOW_END
 
 
 class TrendMomentumStrategy(BaseMicroStrategy):

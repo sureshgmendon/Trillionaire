@@ -68,6 +68,10 @@ class Settings(BaseSettings):
 
     # IST Algorithmic Session Boundaries & Risk Switches
     no_entry_before: str = Field(default="09:25", description="Earliest time (IST HH:MM) for new entries")
+    entry_start_time_ist: str = Field(
+        default="09:25",
+        description="Opening bell strategy entry start time in IST ('09:25' or '09:30')",
+    )
     no_entry_after: str = Field(default="14:30", description="Latest time (IST HH:MM) for new entries")
     force_square_off: str = Field(default="15:10", description="Mandatory time (IST HH:MM) to square off all MIS")
     enable_profit_lock: bool = Field(
@@ -79,10 +83,40 @@ class Settings(BaseSettings):
         description="Disable -1.5% daily loss circuit breaker in PAPER mode so forward tests run until 15:10 IST",
     )
 
+    # Strategy & Execution Booster Toggles (persisted in .env, controllable via Settings & Keys)
+    enable_trend_strategy: bool = Field(
+        default=True,
+        description="Enable TREND_MOMENTUM (Opening Range Breakout + Trend Continuation) strategy",
+    )
+    enable_mean_reversion_strategy: bool = Field(
+        default=True,
+        description="Enable MEAN_REVERSION (VWAP + CPR Stretch Fade) strategy",
+    )
+    enable_rvol_breakout_strategy: bool = Field(
+        default=True,
+        description="Enable HIGH_RVOL_BREAKOUT (Relative Volume Institutional Breakout) strategy",
+    )
+    enable_profit_trade_manager: bool = Field(
+        default=True,
+        description="Enable Profit-Only Active Trade Manager on M5 candle closes",
+    )
+    enable_partial_booking: bool = Field(
+        default=True,
+        description="Book 50% partial profits at +1R and move remaining 50% SL to breakeven",
+    )
+    enable_lunch_volume_filter: bool = Field(
+        default=True,
+        description="Require RVOL >= 2.0 for new entries between 11:45 and 13:15 IST",
+    )
+    enable_vision_filter: bool = Field(
+        default=True,
+        description="Screen confirmed trade signals using Gemini Vision chart trap filter",
+    )
+
     # Logging & Observability
     log_level: str = Field(default="INFO", description="Loguru logging level")
 
-    @field_validator("no_entry_before", "no_entry_after", "force_square_off")
+    @field_validator("no_entry_before", "entry_start_time_ist", "no_entry_after", "force_square_off")
     @classmethod
     def validate_time_format(cls, v: str) -> str:
         try:
@@ -100,7 +134,13 @@ class Settings(BaseSettings):
 
     @property
     def no_entry_before_time(self) -> time:
+        if self.entry_start_time_ist and self.entry_start_time_ist != "09:25":
+            return self.get_time(self.entry_start_time_ist)
         return self.get_time(self.no_entry_before)
+
+    @property
+    def effective_entry_start_time(self) -> time:
+        return self.get_time(self.entry_start_time_ist or self.no_entry_before)
 
     @property
     def no_entry_after_time(self) -> time:

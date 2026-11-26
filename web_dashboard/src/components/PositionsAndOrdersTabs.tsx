@@ -4,16 +4,19 @@ import React, { useState, useMemo, useEffect } from "react";
 import {
   Activity,
   Brain,
+  Check,
   Download,
   ListOrdered,
   Maximize2,
   Minimize2,
+  Pencil,
   PieChart,
   Search,
   Sparkles,
   X,
 } from "lucide-react";
 import { isIstCutoffWindow } from "@/lib/istTime";
+import { computeOpenPositionMetrics } from "@/lib/pnl";
 import {
   AnomalyAlert,
   ClosedTrade,
@@ -39,6 +42,14 @@ export interface PositionsAndOrdersTabsProps {
   onRunTradeAutopsy?: () => Promise<TradeAutopsyReport | null>;
   onExitPosition?: (symbol: string) => Promise<{ success: boolean; message?: string }>;
   onCancelOrder?: (orderId: string) => Promise<{ success: boolean; message?: string }>;
+  onModifyOrder?: (
+    orderId: string,
+    params: { trigger_price?: number; limit_price?: number }
+  ) => Promise<{ success: boolean; message?: string }>;
+  onApplySettingToggle?: (
+    settingKey: string,
+    value: boolean | string
+  ) => Promise<{ success: boolean }>;
   signals?: Signal[];
   anomalies?: AnomalyAlert[];
   riskAlerts?: RiskAlert[];
@@ -74,10 +85,99 @@ function formatIstTime(iso?: string): string {
   });
 }
 
+function formatIstDateTime(iso?: string): string {
+  if (!iso) return "--";
+  const dt = new Date(iso);
+  if (Number.isNaN(dt.getTime())) return "--";
+  const datePart = dt.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  const timePart = dt.toLocaleTimeString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  return `${datePart} • ${timePart} IST`;
+}
+
+function getLegRole(ord: Order): { label: "EXIT" | "CANCELLED" | "ENTRY"; rank: number } {
+  if (ord.status === "CANCELLED") {
+    return { label: "CANCELLED", rank: 1 };
+  }
+  if (ord.is_exit) {
+    return { label: "EXIT", rank: 0 };
+  }
+  return { label: "ENTRY", rank: 2 };
+}
+
+interface ExecutedGroup {
+  groupId: string;
+  symbol: string;
+  latestMs: number;
+  legs: Order[];
+}
+
+function groupExecutedOrders(orders: Order[]): ExecutedGroup[] {
+  const byGroup = new Map<string, Order[]>();
+  const chronological = orders
+    .slice()
+    .sort((a, b) => new Date(a.created_at_ist).getTime() - new Date(b.created_at_ist).getTime());
+
+  // Track open/latest round-trip group per symbol for fallback grouping of legacy untagged orders
+  const activeSymbolGroup = new Map<string, string>();
+  let fallbackCounter = 0;
+
+  for (const ord of chronological) {
+    const explicitKey = ord.trade_group_id || ord.parent_order_id;
+    let gKey: string;
+    if (explicitKey) {
+      gKey = explicitKey;
+      activeSymbolGroup.set(ord.tradingsymbol, gKey);
+    } else if (!ord.is_exit) {
+      fallbackCounter += 1;
+      gKey = `sym-${ord.tradingsymbol}-${fallbackCounter}`;
+      activeSymbolGroup.set(ord.tradingsymbol, gKey);
+    } else {
+      gKey = activeSymbolGroup.get(ord.tradingsymbol) || `orphan-${ord.order_id}`;
+    }
+
+    const bucket = byGroup.get(gKey) || [];
+    bucket.push(ord);
+    byGroup.set(gKey, bucket);
+
+    if (ord.is_exit && ord.status === "FILLED" && ord.exit_reason !== "PARTIAL_BOOK_1R") {
+      // Final exit completes this fallback symbol cycle if next entry begins
+      if (!explicitKey) {
+        activeSymbolGroup.delete(ord.tradingsymbol);
+      }
+    }
+  }
+
+  const groups: ExecutedGroup[] = [];
+  for (const [groupId, rawLegs] of Array.from(byGroup.entries())) {
+    const legs = rawLegs.slice().sort((a, b) => {
+      const ra = getLegRole(a).rank;
+      const rb = getLegRole(b).rank;
+      if (ra !== rb) return ra - rb;
+      return new Date(b.created_at_ist).getTime() - new Date(a.created_at_ist).getTime();
+    });
+    const latestMs = Math.max(...legs.map((l) => new Date(l.created_at_ist).getTime() || 0));
+    groups.push({
+      groupId,
+      symbol: legs[0]?.tradingsymbol || "",
+      latestMs,
+      legs,
+    });
+  }
+
+  return groups.sort((a, b) => b.latestMs - a.latestMs);
+}
+
 function getExitReasonBadgeClass(reason: string): string {
   switch (reason) {
     case "TARGET_HIT":
       return "bg-emerald-500/20 text-emerald-300 border-emerald-500/40";
+    case "PARTIAL_BOOK_1R":
+      return "bg-teal-500/20 text-teal-300 border-teal-500/40";
     case "SL_HIT":
       return "bg-rose-500/20 text-rose-300 border-rose-500/40";
     case "FLATTEN_ALL":
@@ -105,12 +205,18 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
   onRunTradeAutopsy,
   onExitPosition,
   onCancelOrder,
+  onModifyOrder,
+  onApplySettingToggle,
 }) => {
   const [activeTab, setActiveTab] = useState<"OPEN" | "EXECUTED" | "REPORT">("OPEN");
   const [executedSearch, setExecutedSearch] = useState("");
   const [reportSearch, setReportSearch] = useState("");
   const [exitingSymbols, setExitingSymbols] = useState<Record<string, boolean>>({});
   const [cancellingOrders, setCancellingOrders] = useState<Record<string, boolean>>({});
+  const [editingOrderId, setEditingOrderId] = useState<string | null>(null);
+  const [editPriceInput, setEditPriceInput] = useState<string>("");
+  const [modifyingOrders, setModifyingOrders] = useState<Record<string, boolean>>({});
+  const [appliedToggles, setAppliedToggles] = useState<Record<string, boolean>>({});
   const [isExpanded, setIsExpanded] = useState(false);
   const [istCutoffActive, setIstCutoffActive] = useState(false);
   const [isRunningAutopsy, setIsRunningAutopsy] = useState(false);
@@ -171,8 +277,26 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
     }
   };
 
+  const handleSaveModifyOrder = async (ord: Order) => {
+    if (!onModifyOrder) return;
+    const parsed = parseFloat(editPriceInput);
+    if (Number.isNaN(parsed) || parsed <= 0) return;
+    setModifyingOrders((prev) => ({ ...prev, [ord.order_id]: true }));
+    try {
+      const isTrigger = ord.order_type === "SL_LIMIT" || ord.status === "TRIGGER PENDING";
+      await onModifyOrder(
+        ord.order_id,
+        isTrigger ? { trigger_price: parsed } : { limit_price: parsed }
+      );
+      setEditingOrderId(null);
+      setEditPriceInput("");
+    } finally {
+      setModifyingOrders((prev) => ({ ...prev, [ord.order_id]: false }));
+    }
+  };
+
   // ---------------------------------------------------------------------------
-  // Tab 2: EXECUTED (Completed / Cancelled / Rejected Orders)
+  // Tab 2: EXECUTED (Grouped 3-Leg Trade Pairs: Exit + Cancelled + Entry)
   // ---------------------------------------------------------------------------
   const executedOrders = useMemo(() => {
     return orders
@@ -202,6 +326,11 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
         (o.rejection_reason && o.rejection_reason.toLowerCase().includes(q))
     );
   }, [executedOrders, executedSearch]);
+
+  const groupedExecutedTrades = useMemo(
+    () => groupExecutedOrders(filteredExecutedOrders),
+    [filteredExecutedOrders]
+  );
 
   const downloadExecutedCsv = () => {
     if (filteredExecutedOrders.length === 0) return;
@@ -258,29 +387,19 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
 
     // 1. Live running open positions (Qty != 0) updated dynamically on every tick
     for (const pos of positions) {
-      const rawQty = pos.quantity ?? 0;
-      if (Math.abs(rawQty) === 0) continue;
-      const sym = (pos as any).symbol || pos.tradingsymbol;
-      const isBuy = (pos.side as any) === "BUY" || rawQty > 0;
-      const netQty = isBuy ? Math.abs(rawQty) : -Math.abs(rawQty);
-      const avg = (pos as any).avg_price ?? pos.average_entry_price ?? 0;
-      const liveLtp = (sym && ticks[sym]?.ltp) ?? pos.ltp ?? avg;
-      const unrealized = isBuy
-        ? (liveLtp - avg) * Math.abs(rawQty)
-        : (avg - liveLtp) * Math.abs(rawQty);
-      const chgPct =
-        avg > 0 ? ((liveLtp - avg) / avg) * 100 * (isBuy ? 1 : -1) : 0;
+      if (Math.abs(pos.quantity ?? 0) === 0) continue;
+      const metrics = computeOpenPositionMetrics(pos, ticks);
 
       rows.push({
-        key: `open-${sym}`,
+        key: `open-${metrics.sym}`,
         product: "MIS",
-        instrument: sym,
+        instrument: metrics.sym,
         side: pos.side,
-        qty: netQty,
-        avg: Math.round(avg * 100) / 100,
-        ltp: Math.round(liveLtp * 100) / 100,
-        pnl: Math.round(unrealized * 100) / 100,
-        chgPct: Math.round(chgPct * 100) / 100,
+        qty: metrics.netQty,
+        avg: metrics.avgPrice,
+        ltp: metrics.liveLtp,
+        pnl: metrics.unrealizedPnl,
+        chgPct: metrics.pctChange,
         isOpen: true,
         slPrice: pos.stop_loss,
         targetPrice: pos.target_price,
@@ -649,7 +768,11 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
                   const liveLtp = ticks[sym]?.ltp ?? ord.limit_price ?? ord.trigger_price ?? 0;
                   const displayPrice = ord.trigger_price ?? ord.limit_price ?? 0;
                   const isTriggerPending = ord.status === "TRIGGER PENDING";
+                  const isTpPending = !!ord.is_exit && ord.order_type === "LIMIT" && ord.status === "OPEN";
                   const isCancelling = !!cancellingOrders[ord.order_id];
+                  const isModifying = !!modifyingOrders[ord.order_id];
+                  const isEditingThis = editingOrderId === ord.order_id;
+                  const statusLabel = isTpPending ? "LIMIT PENDING" : ord.status;
 
                   const isSelected = selectedSymbol === sym;
 
@@ -680,7 +803,7 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
                       <td className="py-2.5 px-3 font-bold text-white whitespace-nowrap">
                         <span>{sym}</span>
                         <span className="ml-1.5 text-[9px] px-1 py-0.2 rounded bg-cockpit-surface border border-cockpit-border text-cockpit-muted font-normal">
-                          {ord.order_type === "SL_LIMIT" ? "SL-L" : ord.order_type}
+                          {ord.order_type === "SL_LIMIT" ? "SL-L" : isTpPending ? "TP-LIM" : ord.order_type}
                         </span>
                       </td>
                       <td className="py-2.5 px-2">
@@ -695,19 +818,71 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
                         ₹{liveLtp.toFixed(2)}
                       </td>
                       <td className="py-2.5 px-2 text-right text-slate-300 tabular-nums">
-                        ₹{displayPrice.toFixed(2)}
+                        {isEditingThis ? (
+                          <div
+                            className="inline-flex items-center space-x-1"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <input
+                              type="number"
+                              step="0.05"
+                              value={editPriceInput}
+                              onChange={(e) => setEditPriceInput(e.target.value)}
+                              className="w-20 px-1.5 py-0.5 rounded bg-slate-900 border border-cyan-500 text-white text-[11px] font-mono text-right focus:outline-none"
+                            />
+                            <button
+                              type="button"
+                              disabled={isModifying}
+                              onClick={() => handleSaveModifyOrder(ord)}
+                              title="Save Price"
+                              className="p-1 rounded bg-emerald-500/20 hover:bg-emerald-500/35 text-emerald-300 border border-emerald-500/40"
+                            >
+                              <Check className="h-3 w-3" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingOrderId(null);
+                                setEditPriceInput("");
+                              }}
+                              title="Discard"
+                              className="p-1 rounded bg-slate-700/40 hover:bg-slate-700 text-slate-300 border border-slate-600/40"
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          </div>
+                        ) : (
+                          <span>₹{displayPrice.toFixed(2)}</span>
+                        )}
                       </td>
                       <td className="py-2.5 px-3 text-right">
-                        <div className="flex items-center justify-end space-x-2">
+                        <div className="flex items-center justify-end space-x-1.5">
                           <span
                             className={`px-2 py-0.5 rounded text-[10px] font-semibold uppercase ${
                               isTriggerPending
                                 ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                                : isTpPending
+                                ? "bg-emerald-500/15 text-emerald-300 border border-emerald-500/40"
                                 : "bg-blue-500/20 text-blue-400 border border-blue-500/40"
                             }`}
                           >
-                            {ord.status}
+                            {statusLabel}
                           </span>
+                          {onModifyOrder && !isEditingThis && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setEditingOrderId(ord.order_id);
+                                setEditPriceInput(displayPrice.toFixed(2));
+                              }}
+                              title="Modify Trigger / Limit Price"
+                              className="px-1.5 py-0.5 rounded text-[10px] font-bold border bg-cyan-500/15 hover:bg-cyan-500/30 text-cyan-300 border-cyan-500/40 transition inline-flex items-center space-x-0.5"
+                            >
+                              <Pencil className="h-2.5 w-2.5" />
+                              <span>Modify</span>
+                            </button>
+                          )}
                           {onCancelOrder && (
                             <button
                               type="button"
@@ -756,87 +931,103 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
                   <th className="py-2 px-3 text-right">Status</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-cockpit-border/40">
-                {filteredExecutedOrders.map((ord) => {
-                  const isBuy = ord.side === "BUY";
-                  const execPrice = ord.average_fill_price ?? ord.limit_price ?? 0;
-                  const isComplete = ord.status === "FILLED";
-                  const isRejected = ord.status === "REJECTED";
-                  const reasonBadge = ord.rejection_reason || ord.exit_reason;
+              <tbody className="divide-y divide-cockpit-border/30">
+                {groupedExecutedTrades.map((grp, groupIdx) => {
+                  const groupBg = groupIdx % 2 === 0 ? "bg-slate-900/40" : "bg-slate-800/35";
+                  return grp.legs.map((ord, legIdx) => {
+                    const isBuy = ord.side === "BUY";
+                    const execPrice = ord.average_fill_price ?? ord.limit_price ?? ord.trigger_price ?? 0;
+                    const isComplete = ord.status === "FILLED";
+                    const isRejected = ord.status === "REJECTED";
+                    const reasonBadge = ord.rejection_reason || ord.exit_reason;
+                    const role = getLegRole(ord);
+                    const isSelected = selectedSymbol === ord.tradingsymbol;
 
-                  const isSelected = selectedSymbol === ord.tradingsymbol;
-
-                  return (
-                    <tr
-                      key={ord.order_id}
-                      onClick={() => onSelectSymbol?.(ord.tradingsymbol)}
-                      className={`cursor-pointer transition ${
-                        isSelected
-                          ? "bg-cockpit-blue/15 border-l-2 border-cockpit-blue"
-                          : "hover:bg-cockpit-surface/60"
-                      }`}
-                    >
-                      <td className="py-2 px-3 text-cockpit-muted whitespace-nowrap">
-                        {formatIstTime(ord.created_at_ist)}
-                      </td>
-                      <td className="py-2 px-2">
-                        <span
-                          className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                            isBuy
-                              ? "bg-blue-500/20 text-blue-400 border border-blue-500/40"
-                              : "bg-rose-500/20 text-rose-400 border border-rose-500/40"
-                          }`}
-                        >
-                          {ord.side}
-                        </span>
-                      </td>
-                      <td className="py-2 px-3 font-bold text-white whitespace-nowrap">
-                        <span>{ord.tradingsymbol}</span>
-                        <span className="ml-1.5 text-[9px] px-1 py-0.2 rounded bg-cockpit-surface border border-cockpit-border text-cockpit-muted font-normal">
-                          NSE
-                        </span>
-                      </td>
-                      <td className="py-2 px-2">
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-500/20 text-purple-300 border border-purple-500/40">
-                          {ord.product || "MIS"}
-                        </span>
-                      </td>
-                      <td className="py-2 px-2 text-right font-medium text-white tabular-nums">
-                        {ord.filled_quantity}/{ord.quantity}
-                      </td>
-                      <td className="py-2 px-2 text-right font-medium text-white tabular-nums">
-                        ₹{execPrice.toFixed(2)}
-                      </td>
-                      <td className="py-2 px-3 text-right">
-                        <div className="inline-flex items-center space-x-1.5">
-                          {reasonBadge && (
+                    return (
+                      <tr
+                        key={ord.order_id}
+                        onClick={() => onSelectSymbol?.(ord.tradingsymbol)}
+                        className={`cursor-pointer transition ${
+                          isSelected
+                            ? "bg-cockpit-blue/15 border-l-2 border-cockpit-blue"
+                            : `${groupBg} hover:bg-cockpit-surface/70`
+                        } ${legIdx === 0 && groupIdx > 0 ? "border-t-2 border-slate-700/70" : ""}`}
+                      >
+                        <td className="py-2 px-3 text-cockpit-muted whitespace-nowrap">
+                          {formatIstTime(ord.created_at_ist)}
+                        </td>
+                        <td className="py-2 px-2">
+                          <div className="inline-flex items-center space-x-1">
                             <span
-                              title={reasonBadge}
-                              className={`px-1.5 py-0.5 rounded text-[9px] font-semibold border max-w-[160px] truncate ${
-                                isRejected
-                                  ? "bg-rose-500/10 text-rose-300 border-rose-500/30"
-                                  : getExitReasonBadgeClass(reasonBadge)
+                              className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                isBuy
+                                  ? "bg-blue-500/20 text-blue-400 border border-blue-500/40"
+                                  : "bg-rose-500/20 text-rose-400 border border-rose-500/40"
                               }`}
                             >
-                              {reasonBadge}
+                              {ord.side}
                             </span>
-                          )}
-                          <span
-                            title={ord.rejection_reason || ord.exit_reason || ord.status}
-                            className={`px-2 py-0.5 rounded text-[10px] font-semibold uppercase ${
-                              isComplete
-                                ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40"
-                                : isRejected
-                                ? "bg-rose-500/20 text-rose-400 border border-rose-500/40"
-                                : "bg-slate-700/40 text-slate-400 border border-slate-600/40"
-                            }`}
-                          >
-                            {isComplete ? "COMPLETE" : ord.status}
+                            <span
+                              className={`px-1 py-0.2 rounded text-[8px] font-bold uppercase ${
+                                role.label === "EXIT"
+                                  ? "bg-emerald-500/15 text-emerald-300"
+                                  : role.label === "CANCELLED"
+                                  ? "bg-slate-700/60 text-slate-400"
+                                  : "bg-cyan-500/15 text-cyan-300"
+                              }`}
+                            >
+                              {role.label}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="py-2 px-3 font-bold text-white whitespace-nowrap">
+                          <span>{ord.tradingsymbol}</span>
+                          <span className="ml-1.5 text-[9px] px-1 py-0.2 rounded bg-cockpit-surface border border-cockpit-border text-cockpit-muted font-normal">
+                            {ord.order_type === "SL_LIMIT" ? "SL-L" : "NSE"}
                           </span>
-                        </div>
-                      </td>
-                    </tr>
-                  );
+                        </td>
+                        <td className="py-2 px-2">
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-500/20 text-purple-300 border border-purple-500/40">
+                            {ord.product || "MIS"}
+                          </span>
+                        </td>
+                        <td className="py-2 px-2 text-right font-medium text-white tabular-nums">
+                          {ord.filled_quantity}/{ord.quantity}
+                        </td>
+                        <td className="py-2 px-2 text-right font-medium text-white tabular-nums">
+                          ₹{execPrice.toFixed(2)}
+                        </td>
+                        <td className="py-2 px-3 text-right">
+                          <div className="inline-flex items-center space-x-1.5">
+                            {reasonBadge && (
+                              <span
+                                title={reasonBadge}
+                                className={`px-1.5 py-0.5 rounded text-[9px] font-semibold border max-w-[160px] truncate ${
+                                  isRejected
+                                    ? "bg-rose-500/10 text-rose-300 border-rose-500/30"
+                                    : getExitReasonBadgeClass(reasonBadge)
+                                }`}
+                              >
+                                {reasonBadge}
+                              </span>
+                            )}
+                            <span
+                              title={ord.rejection_reason || ord.exit_reason || ord.status}
+                              className={`px-2 py-0.5 rounded text-[10px] font-semibold uppercase ${
+                                isComplete
+                                  ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40"
+                                  : isRejected
+                                  ? "bg-rose-500/20 text-rose-400 border border-rose-500/40"
+                                  : "bg-slate-700/40 text-slate-400 border border-slate-600/40"
+                              }`}
+                            >
+                              {isComplete ? "COMPLETE" : ord.status}
+                            </span>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  });
                 })}
               </tbody>
             </table>
@@ -861,13 +1052,14 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
                 <table className="w-full text-left text-xs font-mono">
                   <thead className="sticky top-0 z-10 bg-slate-950/95 backdrop-blur border-b border-cockpit-border text-[10px] text-cockpit-muted uppercase">
                     <tr>
-                      <th className="py-2 px-3">Product</th>
-                      <th className="py-2 px-3">Instrument</th>
-                      <th className="py-2 px-2 text-right">Qty.</th>
-                      <th className="py-2 px-2 text-right">Avg.</th>
-                      <th className="py-2 px-2 text-right">LTP</th>
-                      <th className="py-2 px-3 text-right">P&L</th>
-                      <th className="py-2 px-3 text-right">Chg.</th>
+                      <th className="py-2 px-2">Product</th>
+                      <th className="py-2 px-2">Instrument</th>
+                      <th className="py-2 px-1.5 text-right">Qty.</th>
+                      <th className="py-2 px-1.5 text-right">Avg.</th>
+                      <th className="py-2 px-1.5 text-right">LTP</th>
+                      <th className="py-2 px-2 text-center w-28 sm:w-36">P&amp;L Bar</th>
+                      <th className="py-2 px-2 text-right">P&amp;L</th>
+                      <th className="py-2 px-2 text-right">Chg.</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-cockpit-border/40">
@@ -876,6 +1068,10 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
                       const isLong = item.qty > 0;
                       const isShort = item.qty < 0;
                       const isExiting = !!exitingSymbols[item.instrument];
+                      const barWidthPct =
+                        maxAbsPnl > 0
+                          ? Math.min(100, (Math.abs(item.pnl) / maxAbsPnl) * 100)
+                          : 0;
 
                       const isSelected = selectedSymbol === item.instrument;
 
@@ -889,12 +1085,12 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
                               : "hover:bg-cockpit-surface/60"
                           }`}
                         >
-                          <td className="py-2 px-3">
+                          <td className="py-1.5 px-2">
                             <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-500/20 text-purple-300 border border-purple-500/40">
                               {item.product}
                             </span>
                           </td>
-                          <td className="py-2 px-3 whitespace-nowrap">
+                          <td className="py-1.5 px-2 whitespace-nowrap">
                             <div className="flex items-center space-x-1.5">
                               <span className="font-bold text-white">{item.instrument}</span>
                               {item.isOpen && item.slPrice !== undefined && item.targetPrice !== undefined && (
@@ -922,7 +1118,7 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
                             </div>
                           </td>
                           <td
-                            className={`py-2 px-2 text-right font-medium tabular-nums ${
+                            className={`py-1.5 px-1.5 text-right font-medium tabular-nums ${
                               isLong
                                 ? "text-blue-400 font-bold"
                                 : isShort
@@ -932,20 +1128,44 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
                           >
                             {item.qty}
                           </td>
-                          <td className="py-2 px-2 text-right text-cockpit-muted tabular-nums">
+                          <td className="py-1.5 px-1.5 text-right text-cockpit-muted tabular-nums">
                             ₹{item.avg.toFixed(2)}
                           </td>
-                          <td className="py-2 px-2 text-right font-bold text-white tabular-nums">
+                          <td className="py-1.5 px-1.5 text-right font-bold text-white tabular-nums">
                             ₹{item.ltp.toFixed(2)}
                           </td>
+                          {/* Inline Zero-Centered Horizontal P&L Slider Bar */}
+                          <td className="py-1.5 px-2">
+                            <div
+                              title={`Zero-Centered P&L Slider (${isProfit ? "+" : ""}₹${item.pnl.toFixed(2)})`}
+                              className="w-24 sm:w-32 mx-auto grid grid-cols-2 gap-0 h-3 bg-cockpit-surface rounded border border-cockpit-border/50 overflow-hidden"
+                            >
+                              <div className="relative flex justify-end items-center border-r border-cockpit-border/80 pr-0.5">
+                                {!isProfit && (
+                                  <div
+                                    style={{ width: `${barWidthPct}%` }}
+                                    className="h-full bg-gradient-to-l from-rose-500 to-rose-600/80 rounded-l"
+                                  />
+                                )}
+                              </div>
+                              <div className="relative flex justify-start items-center pl-0.5">
+                                {isProfit && (
+                                  <div
+                                    style={{ width: `${barWidthPct}%` }}
+                                    className="h-full bg-gradient-to-r from-blue-500 to-emerald-500 rounded-r"
+                                  />
+                                )}
+                              </div>
+                            </div>
+                          </td>
                           <td
-                            className={`py-2 px-3 text-right font-bold tabular-nums ${
+                            className={`py-1.5 px-2 text-right font-bold tabular-nums ${
                               isProfit ? "text-emerald-400" : "text-rose-400"
                             }`}
                           >
                             {isProfit ? "+" : ""}₹{item.pnl.toFixed(2)}
                           </td>
-                          <td className="py-2 px-3 text-right tabular-nums">
+                          <td className="py-1.5 px-2 text-right tabular-nums">
                             <div className="inline-flex items-center space-x-2">
                               <span
                                 className={`text-xs font-semibold ${
@@ -980,7 +1200,7 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
                   </tbody>
                   <tfoot className="sticky bottom-0 border-t-2 border-cockpit-border bg-cockpit-surface/95 backdrop-blur-sm font-bold">
                     <tr>
-                      <td colSpan={4} className="py-2.5 px-3">
+                      <td colSpan={5} className="py-2 px-2">
                         <div className="inline-flex items-center space-x-2 px-2 py-0.5 rounded bg-cockpit-card border border-cockpit-border text-[10px] font-mono font-medium text-cockpit-muted">
                           <span>
                             Realized:{" "}
@@ -1013,11 +1233,11 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
                           </span>
                         </div>
                       </td>
-                      <td className="py-2.5 px-2 text-right text-white uppercase text-xs font-bold tracking-wider">
+                      <td className="py-2 px-2 text-right text-white uppercase text-xs font-bold tracking-wider">
                         Total
                       </td>
                       <td
-                        className={`py-2.5 px-3 text-right text-sm font-mono tabular-nums font-bold ${
+                        className={`py-2 px-2 text-right text-sm font-mono tabular-nums font-bold ${
                           totalReportPnl >= 0 ? "text-emerald-400" : "text-rose-400"
                         }`}
                       >
@@ -1033,78 +1253,15 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
                 </table>
               </div>
 
-              {/* Bottom Zero-Centered Horizontal P&L Breakdown Chart */}
-              <div className="p-3 border-t border-cockpit-border bg-cockpit-surface/30">
-                <div className="text-[10px] font-mono uppercase tracking-wider text-cockpit-muted mb-2 flex items-center justify-between">
-                  <span>Horizontal P&L Breakdown</span>
-                  <span className="text-[9px] text-cockpit-muted/60">
-                    Zero-Centered (Losing ← 0 → Profitable)
-                  </span>
-                </div>
-                <div className="space-y-1.5">
-                  {reportItems.map((item) => {
-                    const isProfit = item.pnl >= 0;
-                    const barWidthPct =
-                      maxAbsPnl > 0
-                        ? Math.min(100, (Math.abs(item.pnl) / maxAbsPnl) * 100)
-                        : 0;
-                    const isSelectedBar = selectedSymbol === item.instrument;
-                    return (
-                      <div
-                        key={`bar-${item.key}`}
-                        onClick={() => onSelectSymbol?.(item.instrument)}
-                        className={`flex items-center text-xs font-mono cursor-pointer rounded px-1 py-0.5 transition ${
-                          isSelectedBar ? "bg-cockpit-blue/15 ring-1 ring-cockpit-blue/40" : "hover:bg-cockpit-surface/60"
-                        }`}
-                      >
-                        <div className="w-32 sm:w-40 shrink-0 truncate font-semibold text-white">
-                          <span>{item.instrument}</span>
-                          <span className="text-[10px] text-purple-400 ml-1">
-                            ({item.isOpen ? "LIVE" : item.exitReason || "MIS"})
-                          </span>
-                        </div>
-                        <div className="flex-1 grid grid-cols-2 gap-0 h-4 bg-cockpit-surface rounded border border-cockpit-border/50 relative overflow-hidden">
-                          <div className="relative flex justify-end items-center border-r border-cockpit-border/80 pr-1">
-                            {!isProfit && (
-                              <div
-                                style={{ width: `${barWidthPct}%` }}
-                                className="h-full bg-gradient-to-l from-rose-500 to-rose-600/70 rounded-l"
-                              />
-                            )}
-                          </div>
-                          <div className="relative flex justify-start items-center pl-1">
-                            {isProfit && (
-                              <div
-                                style={{ width: `${barWidthPct}%` }}
-                                className="h-full bg-gradient-to-r from-blue-500 to-emerald-500 rounded-r"
-                              />
-                            )}
-                          </div>
-                        </div>
-                        <div
-                          className={`w-24 text-right shrink-0 tabular-nums font-bold text-xs ${
-                            isProfit ? "text-emerald-400" : "text-rose-400"
-                          }`}
-                        >
-                          {isProfit ? "+" : ""}₹{item.pnl.toFixed(2)}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Post-Market Gemini Trade Autopsy Coach Card */}
-              <div className="p-3 border-t border-cockpit-border bg-slate-950/60 space-y-2">
+              {/* Hourly & Post-Market Gemini Trade Autopsy Coach Cards (Stacked Newest-First) */}
+              <div className="p-3 border-t border-cockpit-border bg-slate-950/60 space-y-2.5">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center space-x-1.5 text-[11px] font-mono font-bold text-cyan-300">
                     <Brain className="h-3.5 w-3.5 text-cyan-400" />
                     <span>AI TRADE AUTOPSY COACH</span>
-                    {tradeAutopsy && (
-                      <span className="text-[9px] px-1.5 py-0.2 rounded bg-cockpit-surface border border-cockpit-border text-cockpit-muted font-normal">
-                        {tradeAutopsy.trade_date}
-                      </span>
-                    )}
+                    <span className="text-[9px] px-1.5 py-0.2 rounded bg-cockpit-surface border border-cockpit-border text-cockpit-muted font-normal">
+                      Hourly (10:30–15:35 IST)
+                    </span>
                   </div>
                   {onRunTradeAutopsy && (
                     <button
@@ -1119,34 +1276,119 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
                   )}
                 </div>
 
-                {tradeAutopsy ? (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px] font-mono">
-                    <div className="p-2 rounded bg-cockpit-surface/70 border border-cockpit-border space-y-1">
-                      <div className="text-[10px] uppercase text-cockpit-muted font-bold">
-                        Scorecard & Diagnosis (WR {tradeAutopsy.session_scorecard.win_rate_pct}% • PF {tradeAutopsy.session_scorecard.profit_factor})
+                {(() => {
+                  const autopsyList: TradeAutopsyReport[] =
+                    tradeAutopsy?.history && tradeAutopsy.history.length > 0
+                      ? tradeAutopsy.history
+                      : tradeAutopsy
+                      ? [tradeAutopsy]
+                      : [];
+
+                  if (autopsyList.length === 0) {
+                    return (
+                      <div className="text-[10px] font-mono text-cockpit-muted">
+                        Scheduled automatically at 10:30, 11:30, 12:30, 13:30, 14:30, and 15:35 IST — or click Generate Autopsy for instant review.
                       </div>
-                      {tradeAutopsy.loss_and_trap_diagnosis.map((d, idx) => (
-                        <div key={`diag-${idx}`} className="text-slate-300 leading-snug">
-                          • {d}
-                        </div>
-                      ))}
+                    );
+                  }
+
+                  return (
+                    <div className="space-y-2.5">
+                      {autopsyList.map((entry, reviewIdx) => {
+                        const timeLabel =
+                          entry.generated_time_label || formatIstDateTime(entry.generated_at_ist);
+                        return (
+                          <div
+                            key={`autopsy-${entry.generated_at_ist}-${reviewIdx}`}
+                            className="w-full p-2.5 rounded-lg bg-cockpit-surface/75 border border-cockpit-border space-y-2 text-[11px] font-mono"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-cockpit-border/60 pb-1.5">
+                              <span className="px-2 py-0.5 rounded bg-cyan-500/15 border border-cyan-500/40 text-cyan-300 font-bold text-[10px]">
+                                {timeLabel}
+                              </span>
+                              <span className="text-[10px] text-cockpit-muted">
+                                Trades {entry.session_scorecard.total_trades} • WR{" "}
+                                {entry.session_scorecard.win_rate_pct}% • PF{" "}
+                                {entry.session_scorecard.profit_factor} • {entry.source}
+                              </span>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                              <div className="space-y-1">
+                                <div className="text-[10px] uppercase text-cockpit-muted font-bold">
+                                  Diagnosis
+                                </div>
+                                {entry.loss_and_trap_diagnosis.map((d, idx) => (
+                                  <div key={`diag-${idx}`} className="text-slate-300 leading-snug">
+                                    • {d}
+                                  </div>
+                                ))}
+                              </div>
+                              <div className="space-y-1">
+                                <div className="text-[10px] uppercase text-cockpit-muted font-bold">
+                                  Parameter Recommendations
+                                </div>
+                                {entry.parameter_recommendations.map((r, idx) => (
+                                  <div key={`rec-${idx}`} className="text-emerald-300 leading-snug">
+                                    • {r}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+
+                            {entry.suggested_toggle_actions && entry.suggested_toggle_actions.length > 0 && (
+                              <div className="pt-1.5 border-t border-cockpit-border/50 space-y-1.5">
+                                <div className="text-[10px] uppercase font-bold text-amber-300 tracking-wide">
+                                  SUGGESTED TOGGLE ACTIONS (Settings &amp; Keys)
+                                </div>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {entry.suggested_toggle_actions.map((act, actIdx) => {
+                                    const toggleStateKey = `${entry.generated_at_ist}-${act.setting_key}-${actIdx}`;
+                                    const isApplied = !!appliedToggles[toggleStateKey];
+                                    return (
+                                      <div
+                                        key={toggleStateKey}
+                                        title={act.reason}
+                                        className="inline-flex items-center space-x-1.5 px-2 py-1 rounded bg-slate-900 border border-amber-500/40 text-[10px]"
+                                      >
+                                        <span className="font-bold text-amber-300">{act.action}</span>
+                                        {onApplySettingToggle && (
+                                          <button
+                                            type="button"
+                                            onClick={async () => {
+                                              const res = await onApplySettingToggle(
+                                                act.setting_key,
+                                                act.recommended_value
+                                              );
+                                              if (res.success) {
+                                                setAppliedToggles((prev) => ({
+                                                  ...prev,
+                                                  [toggleStateKey]: true,
+                                                }));
+                                              }
+                                            }}
+                                            disabled={isApplied}
+                                            className={`px-1.5 py-0.2 rounded font-bold border transition ${
+                                              isApplied
+                                                ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+                                                : "bg-cockpit-blue/20 hover:bg-cockpit-blue/35 text-cyan-300 border-cyan-500/40"
+                                            }`}
+                                          >
+                                            {isApplied ? "Applied ✓" : "Apply"}
+                                          </button>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
-                    <div className="p-2 rounded bg-cockpit-surface/70 border border-cockpit-border space-y-1">
-                      <div className="text-[10px] uppercase text-cockpit-muted font-bold">
-                        Next-Session Recommendations
-                      </div>
-                      {tradeAutopsy.parameter_recommendations.map((r, idx) => (
-                        <div key={`rec-${idx}`} className="text-emerald-300 leading-snug">
-                          • {r}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="text-[10px] font-mono text-cockpit-muted">
-                    Scheduled automatically at 03:35 PM IST post-square-off, or click Generate Autopsy for instant review.
-                  </div>
-                )}
+                  );
+                })()}
               </div>
             </div>
           )}

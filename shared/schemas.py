@@ -172,6 +172,8 @@ class Order(StrictBaseModel):
     sl_price: Optional[float] = Field(default=None, gt=0, description="Planned stop loss level")
     target_price: Optional[float] = Field(default=None, gt=0, description="Planned target level")
     is_exit: bool = Field(default=False, description="Whether order is an exit leg")
+    parent_order_id: Optional[str] = Field(default=None, description="Parent entry order ID for OCO / exit leg pairing")
+    trade_group_id: Optional[str] = Field(default=None, description="Round-trip trade group ID linking Entry + SL/TP + Exit legs")
     client_order_tag: Optional[str] = Field(default=None, description="Unique client idempotency tag")
     created_at_ist: datetime = Field(..., description="Creation timestamp in IST")
 
@@ -196,6 +198,10 @@ class Position(StrictBaseModel):
     stop_loss: float = Field(..., gt=0, description="Active trailing or hard stop loss price")
     initial_sl_price: Optional[float] = Field(default=None, gt=0, description="Original initial hard stop loss level prior to 1R breakeven advance")
     target_price: float = Field(..., gt=0, description="Active profit target price")
+    original_target_price: Optional[float] = Field(default=None, gt=0, description="Original initial target level prior to +1.0R momentum extension")
+    partial_booked: bool = Field(default=False, description="Whether 50% partial booking at +1R has executed")
+    halfway_sl_stepped: bool = Field(default=False, description="Whether Profit-Only Trade Manager stepped SL 50% closer to entry")
+    profit_locked_at_tp: bool = Field(default=False, description="Whether Profit-Only Trade Manager locked SL at original TP and extended TP +1R")
     entry_time: Optional[datetime] = Field(default=None, description="Entry execution timestamp in IST")
     entry_order_id: Optional[str] = Field(default=None, description="Entry order ID")
     sl_order_id: Optional[str] = Field(default=None, description="Paired OCO SL exit order ID")
@@ -221,6 +227,7 @@ class ClosedTrade(StrictBaseModel):
     realized_pnl: float = Field(..., description="Net realized PnL in INR")
     pnl_pct: float = Field(..., description="Return percentage")
     exit_reason: str = Field(..., description="TARGET_HIT, SL_HIT, FLATTEN_ALL, MANUAL_EXIT, or EOD_SQUARE_OFF")
+    is_partial: bool = Field(default=False, description="True if closed record represents a 50% partial profit booking leg")
     entry_time: datetime = Field(..., description="Entry execution timestamp in IST")
     exit_time: datetime = Field(..., description="Exit execution timestamp in IST")
 

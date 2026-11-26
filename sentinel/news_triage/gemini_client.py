@@ -25,7 +25,7 @@ def _strip_json_fences(raw: str) -> str:
 
 async def call_gemini_async(
     parts: List[Dict[str, Any]],
-    model_candidates: Iterable[str] = ("gemini-2.5-pro", "gemini-2.5-flash"),
+    model_candidates: Iterable[str] = ("gemini-3.8-flash", "gemini-2.5-pro"),
     timeout_sec: float = 12.0,
     api_key: Optional[str] = None,
     temperature: float = 0.2,

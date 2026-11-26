@@ -35,6 +35,10 @@ class WeekdayMarketScheduler:
         self._last_boot_date: Optional[date] = None
         self._last_squareoff_date: Optional[date] = None
         self._last_stop_date: Optional[date] = None
+        # Hourly market autopsy checkpoints: (hour, minute) IST -> 10:30, 11:30, 12:30, 13:30, 14:30 (+ 15:35 post-market)
+        self.hourly_autopsy_slots: List[tuple[int, int]] = [(10, 30), (11, 30), (12, 30), (13, 30), (14, 30)]
+        self._completed_autopsy_slots: set[str] = set()
+        self._autopsy_history: List[Dict[str, Any]] = []
 
         # Morning boot retry tracking to prevent rapid retry storms
         self._boot_retries_today: int = 0
@@ -212,9 +216,21 @@ class WeekdayMarketScheduler:
             self._current_tracked_date = today
             self._boot_retries_today = 0
             self._boot_retry_after = None
+            self._completed_autopsy_slots.clear()
 
         hour = now_ist.hour
         minute = now_ist.minute
+
+        # Hourly Automated AI Trade Autopsy during market hours (10:30, 11:30, 12:30, 13:30, 14:30 IST)
+        for slot_h, slot_m in self.hourly_autopsy_slots:
+            if hour == slot_h and slot_m <= minute < slot_m + 15:
+                slot_key = f"{today.isoformat()}_{slot_h:02d}:{slot_m:02d}"
+                if slot_key not in self._completed_autopsy_slots:
+                    self._completed_autopsy_slots.add(slot_key)
+                    logger.info(f"[SCHEDULER {slot_h:02d}:{slot_m:02d} IST] Running hourly automated AI Trade Autopsy...")
+                    rep = await self.generate_daily_trade_autopsy(trade_date=today)
+                    if rep:
+                        self._autopsy_history.insert(0, rep)
 
         # 1. 08:45 AM IST: Morning pre-market boot & start
         # Triggers anytime between 08:45 and 15:14 if not yet booted today

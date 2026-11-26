@@ -66,6 +66,14 @@ export const SettingsControlModal: React.FC<SettingsControlModalProps> = ({
   const [geminiApiKey, setGeminiApiKey] = useState("");
   const [telegramBotToken, setTelegramBotToken] = useState("");
   const [telegramChatId, setTelegramChatId] = useState("");
+  const [enableTrendStrategy, setEnableTrendStrategy] = useState(true);
+  const [enableMeanReversionStrategy, setEnableMeanReversionStrategy] = useState(true);
+  const [enableRvolBreakoutStrategy, setEnableRvolBreakoutStrategy] = useState(true);
+  const [enableProfitTradeManager, setEnableProfitTradeManager] = useState(true);
+  const [enablePartialBooking, setEnablePartialBooking] = useState(true);
+  const [enableLunchVolumeFilter, setEnableLunchVolumeFilter] = useState(true);
+  const [enableVisionFilter, setEnableVisionFilter] = useState(true);
+  const [entryStartTimeIst, setEntryStartTimeIst] = useState<"09:25" | "09:30">("09:25");
 
   const [activeTab, setActiveTab] = useState<"execution" | "broker" | "alerts">(initialTab || "execution");
   const [confirmLiveMode, setConfirmLiveMode] = useState(false);
@@ -98,6 +106,14 @@ export const SettingsControlModal: React.FC<SettingsControlModalProps> = ({
           setAllocatedCapital(String(data.allocated_capital ?? 100000));
           setRiskPerTradePct(String(data.risk_per_trade_pct ?? 0.5));
           setKiteUserId(data.kite_user_id || "");
+          setEnableTrendStrategy(data.enable_trend_strategy ?? true);
+          setEnableMeanReversionStrategy(data.enable_mean_reversion_strategy ?? true);
+          setEnableRvolBreakoutStrategy(data.enable_rvol_breakout_strategy ?? true);
+          setEnableProfitTradeManager(data.enable_profit_trade_manager ?? true);
+          setEnablePartialBooking(data.enable_partial_booking ?? true);
+          setEnableLunchVolumeFilter(data.enable_lunch_volume_filter ?? true);
+          setEnableVisionFilter(data.enable_vision_filter ?? true);
+          setEntryStartTimeIst(data.entry_start_time_ist === "09:30" ? "09:30" : "09:25");
         } else {
           setToastMsg({ type: "error", text: "Failed to load settings from engine API" });
         }
@@ -126,6 +142,14 @@ export const SettingsControlModal: React.FC<SettingsControlModalProps> = ({
       trading_mode: tradingMode,
       data_feeder: dataFeeder,
       active_capital_tier: capitalTier,
+      enable_trend_strategy: enableTrendStrategy,
+      enable_mean_reversion_strategy: enableMeanReversionStrategy,
+      enable_rvol_breakout_strategy: enableRvolBreakoutStrategy,
+      enable_profit_trade_manager: enableProfitTradeManager,
+      enable_partial_booking: enablePartialBooking,
+      enable_lunch_volume_filter: enableLunchVolumeFilter,
+      enable_vision_filter: enableVisionFilter,
+      entry_start_time_ist: entryStartTimeIst,
     };
 
     const parsedCapital = parseFloat(allocatedCapital);
@@ -364,6 +388,121 @@ export const SettingsControlModal: React.FC<SettingsControlModalProps> = ({
                           className="w-full px-2.5 py-1.5 rounded bg-cockpit-bg border border-cockpit-border text-white text-xs font-mono focus:outline-none focus:border-cockpit-blue"
                         />
                       </div>
+                    </div>
+                  </div>
+
+                  {/* Strategy & Execution Booster Toggles */}
+                  <div className="bg-slate-950/70 border border-cockpit-border rounded-xl p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[11px] font-bold text-cockpit-muted uppercase tracking-wider">
+                        Strategy Regimes & Profit Boosters (Persisted in .env)
+                      </label>
+                      <span className="text-[10px] text-cyan-400 font-mono">Live Hot-Reload</span>
+                    </div>
+
+                    {/* Opening Bell Entry Start Time */}
+                    <div className="p-2.5 rounded-lg bg-cockpit-surface border border-cockpit-border flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold text-white">Opening Bell Start Time (IST)</div>
+                        <div className="text-[11px] text-slate-400 font-sans">
+                          Sets earliest morning time (09:25 or 09:30 IST) when new intraday entries can fire.
+                        </div>
+                      </div>
+                      <div className="flex items-center space-x-1.5 shrink-0">
+                        {(["09:25", "09:30"] as const).map((tVal) => (
+                          <button
+                            key={tVal}
+                            type="button"
+                            onClick={() => setEntryStartTimeIst(tVal)}
+                            className={`px-2.5 py-1 rounded text-[11px] font-bold border transition ${
+                              entryStartTimeIst === tVal
+                                ? "bg-cockpit-blue/20 text-cockpit-blue border-cockpit-blue"
+                                : "bg-cockpit-bg text-cockpit-muted border-cockpit-border hover:text-white"
+                            }`}
+                          >
+                            {tVal} IST
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* 7 Interactive ON/OFF Toggles with 1-line plain-English descriptions */}
+                    <div className="space-y-2">
+                      {[
+                        {
+                          key: "enable_trend_strategy",
+                          label: "Trend Momentum Strategy",
+                          desc: "Trades Opening Range breakouts above/below VWAP and EMA(200) confirmed by parent index trend.",
+                          val: enableTrendStrategy,
+                          setter: setEnableTrendStrategy,
+                        },
+                        {
+                          key: "enable_mean_reversion_strategy",
+                          label: "Mean Reversion Strategy",
+                          desc: "Fades extreme 1.5x ATR moves back toward VWAP inside CPR zones when the index is range-bound.",
+                          val: enableMeanReversionStrategy,
+                          setter: setEnableMeanReversionStrategy,
+                        },
+                        {
+                          key: "enable_rvol_breakout_strategy",
+                          label: "High-RVOL Breakout Strategy",
+                          desc: "Enters strong volume-surge breakouts outperforming their parent sector index by at least +0.4%.",
+                          val: enableRvolBreakoutStrategy,
+                          setter: setEnableRvolBreakoutStrategy,
+                        },
+                        {
+                          key: "enable_profit_trade_manager",
+                          label: "Profit-Only Active Trade Manager",
+                          desc: "On winning positions only: steps SL halfway at 50% to TP and extends TP +1R when near target with RVOL >= 1.5.",
+                          val: enableProfitTradeManager,
+                          setter: setEnableProfitTradeManager,
+                        },
+                        {
+                          key: "enable_partial_booking",
+                          label: "50% Partial Profit Booking (+1R)",
+                          desc: "Books half of shares at +1R profit and moves Stop Loss on the remaining 50% runner to breakeven.",
+                          val: enablePartialBooking,
+                          setter: setEnablePartialBooking,
+                        },
+                        {
+                          key: "enable_lunch_volume_filter",
+                          label: "Choppy-Lunch Volume Filter (11:45–13:15 IST)",
+                          desc: "Keeps scanning all 100 stocks, but blocks new entries during lunch unless relative volume is RVOL >= 2.0.",
+                          val: enableLunchVolumeFilter,
+                          setter: setEnableLunchVolumeFilter,
+                        },
+                        {
+                          key: "enable_vision_filter",
+                          label: "Gemini Vision Chart Trap Filter",
+                          desc: "Inspects the M5 candlestick chart PNG before order entry to veto obvious double-top or exhaustion traps.",
+                          val: enableVisionFilter,
+                          setter: setEnableVisionFilter,
+                        },
+                      ].map((item) => (
+                        <div
+                          key={item.key}
+                          className="p-2.5 rounded-lg bg-cockpit-surface border border-cockpit-border flex items-center justify-between gap-3"
+                        >
+                          <div className="min-w-0">
+                            <div className="text-xs font-bold text-white">{item.label}</div>
+                            <div className="text-[11px] text-slate-400 font-sans leading-snug">
+                              {item.desc}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => item.setter(!item.val)}
+                            aria-pressed={item.val}
+                            className={`px-3 py-1 rounded-full text-[11px] font-bold border shrink-0 transition ${
+                              item.val
+                                ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/50"
+                                : "bg-slate-800 text-slate-400 border-slate-700"
+                            }`}
+                          >
+                            {item.val ? "ON" : "OFF"}
+                          </button>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 </div>

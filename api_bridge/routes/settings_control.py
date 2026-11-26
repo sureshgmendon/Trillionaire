@@ -93,6 +93,14 @@ class UpdateSettingsRequest(BaseModel):
     active_capital_tier: Optional[str] = Field(default=None, description="Tier key in capital_tiers.yaml")
     allocated_capital: Optional[float] = Field(default=None, gt=0, description="Custom paper/live allocated capital override")
     risk_per_trade_pct: Optional[float] = Field(default=None, gt=0, le=10.0, description="Risk per trade percentage override")
+    enable_trend_strategy: Optional[bool] = Field(default=None, description="Enable TREND_MOMENTUM strategy")
+    enable_mean_reversion_strategy: Optional[bool] = Field(default=None, description="Enable MEAN_REVERSION strategy")
+    enable_rvol_breakout_strategy: Optional[bool] = Field(default=None, description="Enable HIGH_RVOL_BREAKOUT strategy")
+    enable_profit_trade_manager: Optional[bool] = Field(default=None, description="Enable Profit-Only Active Trade Manager")
+    enable_partial_booking: Optional[bool] = Field(default=None, description="Enable 50% Partial Profit Booking at +1R")
+    enable_lunch_volume_filter: Optional[bool] = Field(default=None, description="Require RVOL >= 2.0 between 11:45 and 13:15 IST")
+    enable_vision_filter: Optional[bool] = Field(default=None, description="Enable Gemini Vision chart trap filter")
+    entry_start_time_ist: Optional[str] = Field(default=None, description="Opening bell entry start time in IST ('09:25' or '09:30')")
 
 
 class PushTokenRequest(BaseModel):
@@ -144,6 +152,14 @@ async def get_runtime_settings(engine: TrillionaireEngine = Depends(get_engine))
         "risk_per_trade_pct": engine.risk_gatekeeper.risk_per_trade_pct,
         "token_expired": bool(getattr(engine.broker, "token_expired", False)),
         "available_capital_tiers": available_tiers,
+        "enable_trend_strategy": bool(getattr(settings, "enable_trend_strategy", True)),
+        "enable_mean_reversion_strategy": bool(getattr(settings, "enable_mean_reversion_strategy", True)),
+        "enable_rvol_breakout_strategy": bool(getattr(settings, "enable_rvol_breakout_strategy", True)),
+        "enable_profit_trade_manager": bool(getattr(settings, "enable_profit_trade_manager", True)),
+        "enable_partial_booking": bool(getattr(settings, "enable_partial_booking", True)),
+        "enable_lunch_volume_filter": bool(getattr(settings, "enable_lunch_volume_filter", True)),
+        "enable_vision_filter": bool(getattr(settings, "enable_vision_filter", True)),
+        "entry_start_time_ist": str(getattr(settings, "entry_start_time_ist", "09:25")),
         "engine_running": engine.is_running,
         "engine_booted": engine.is_booted,
         "timestamp_ist": datetime.now(IST_TZ).isoformat(),
@@ -173,8 +189,13 @@ async def update_runtime_settings(
                 updates[field_name] = value.value
             elif isinstance(value, DataFeederType):
                 updates[field_name] = value.value
+            elif isinstance(value, bool):
+                updates[field_name] = "true" if value else "false"
             else:
                 updates[field_name] = value
+
+    if "entry_start_time_ist" in updates:
+        updates["no_entry_before"] = updates["entry_start_time_ist"]
 
     if updates:
         logger.info(f"[SETTINGS UPDATE] Persisting {len(updates)} updated fields to .env: {list(updates.keys())}")

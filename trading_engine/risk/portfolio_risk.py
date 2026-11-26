@@ -244,14 +244,15 @@ class PortfolioRiskGatekeeper:
             )
             return 0
 
-        # 2. Timing Window Check (09:25 <= time <= 14:30 IST)
+        # 2. Timing Window Check (configured 09:25/09:30 - 14:30 IST)
         eval_dt = current_time or signal.generated_at_ist
         if eval_dt.tzinfo is None:
             eval_dt = eval_dt.replace(tzinfo=IST_TZ)
         t = eval_dt.time()
-        if not (ENTRY_WINDOW_START <= t <= ENTRY_WINDOW_END):
+        entry_start = getattr(settings, "effective_entry_start_time", ENTRY_WINDOW_START)
+        if not (entry_start <= t <= ENTRY_WINDOW_END):
             logger.warning(
-                f"[RISK REJECTED] Cannot size {signal.tradingsymbol}: Current time {t.strftime('%H:%M:%S')} is outside entry window (09:25 - 14:30 IST)"
+                f"[RISK REJECTED] Cannot size {signal.tradingsymbol}: Current time {t.strftime('%H:%M:%S')} is outside entry window ({entry_start.strftime('%H:%M')} - 14:30 IST)"
             )
             return 0
 

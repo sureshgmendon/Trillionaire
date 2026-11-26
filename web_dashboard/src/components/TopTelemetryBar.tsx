@@ -21,6 +21,7 @@ import {
 import { ClosedTrade, EngineStatus, Position, Tick } from "@/types/telemetry";
 import { ConnectionStatus } from "@/hooks/useTrillionaireStream";
 import { getIstClockString, isIstCutoffWindow } from "@/lib/istTime";
+import { computeOpenPositionMetrics } from "@/lib/pnl";
 
 interface TopTelemetryBarProps {
   connectionStatus: ConnectionStatus;
@@ -92,15 +93,8 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
     if (!positions || positions.length === 0) return 0.0;
     let totalUnrealized = 0;
     for (const pos of positions) {
-      const qty = pos.quantity ?? 0;
-      if (Math.abs(qty) === 0) continue;
-      const sym = (pos as any).symbol || pos.tradingsymbol;
-      const avgPrice = (pos as any).avg_price ?? pos.average_entry_price ?? 0;
-      const currentLtp = (sym && ticks[sym]?.ltp) ?? pos.ltp ?? avgPrice;
-      const isBuy = (pos.side as any) === "BUY" || qty > 0;
-      totalUnrealized += isBuy
-        ? (currentLtp - avgPrice) * Math.abs(qty)
-        : (avgPrice - currentLtp) * Math.abs(qty);
+      if (Math.abs(pos.quantity ?? 0) === 0) continue;
+      totalUnrealized += computeOpenPositionMetrics(pos, ticks).unrealizedPnl;
     }
     return Math.round(totalUnrealized * 100) / 100;
   }, [ticks, positions]);

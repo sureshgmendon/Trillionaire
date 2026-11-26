@@ -21,10 +21,11 @@ import uuid
 from loguru import logger
 
 from shared.constants import IST_TZ
-from shared.enums import OrderStatus, OrderType, Side
+from shared.enums import OrderStatus, OrderType, Side, Timeframe
 from shared.exceptions import RateLimitExceededException
-from shared.schemas import ClosedTrade, Order, Position, Signal, Tick
+from shared.schemas import Candle, ClosedTrade, Order, Position, Signal, Tick
 from trading_engine.core.event_bus import (
+    CandleCloseEvent,
     EventBus,
     OrderUpdateEvent,
     RiskAlertEvent,
@@ -40,10 +41,12 @@ MAX_PRICE_DEVIATION_PCT = 0.05  # 5% sanity ceiling vs live tick LTP
 
 
 def normalize_exit_reason(raw_reason: Optional[str], breakeven_advanced: bool = False) -> str:
-    """Normalizes internal exit reasons to canonical codes: TARGET_HIT, SL_HIT, FLATTEN_ALL, MANUAL_EXIT, EOD_SQUARE_OFF."""
+    """Normalizes internal exit reasons to canonical codes: TARGET_HIT, SL_HIT, PARTIAL_BOOK_1R, FLATTEN_ALL, MANUAL_EXIT, EOD_SQUARE_OFF."""
     if not raw_reason:
         return "MANUAL_EXIT"
     upper = raw_reason.upper()
+    if "PARTIAL" in upper:
+        return "PARTIAL_BOOK_1R"
     if "TARGET" in upper or upper == "TP_HIT":
         return "TARGET_HIT"
     if "FLATTEN" in upper or "KILL" in upper or "SHUTDOWN" in upper or "LOSS" in upper or "FLOOR" in upper:
@@ -67,7 +70,8 @@ class OrderManager:
         risk_gatekeeper: Optional[PortfolioRiskGatekeeper] = None,
         max_orders_per_sec: int = SEBI_MAX_ORDERS_PER_SEC,
         marketable_buffer_pct: float = DEFAULT_MARKETABLE_BUFFER_PCT,
-        enable_oco_brackets: bool = False,
+        enable_oco_brackets: bool = True,
+        enable_partial_booking: Optional[bool] = None,
         on_state_change: Optional[Callable[[], None]] = None,
     ):
         self.bus = event_bus or bus
@@ -76,6 +80,7 @@ class OrderManager:
         self.max_orders_per_sec = max_orders_per_sec
         self.marketable_buffer_pct = marketable_buffer_pct
         self.enable_oco_brackets = enable_oco_brackets
+        self._explicit_enable_partial_booking = enable_partial_booking
         self.on_state_change = on_state_change
 
         # Rate Limiting: timestamps of sent orders
@@ -94,12 +99,14 @@ class OrderManager:
         # Active OCO exit legs: symbol -> {"sl_order_id": ..., "tp_order_id": ...}
         self._oco_legs: Dict[str, Dict[str, str]] = {}
 
-        # Bracket tracking: symbol -> initial_sl, target, initial_risk, entry_time, entry_order_id
+        # Bracket tracking: symbol -> initial_sl, initial_tp, target, initial_risk, entry_time, entry_order_id
         self._bracket_sl: Dict[str, float] = {}
         self._bracket_tp: Dict[str, float] = {}
         self._initial_sl: Dict[str, float] = {}
+        self._initial_tp: Dict[str, float] = {}
         self._initial_risk: Dict[str, float] = {}
         self._breakeven_advanced: Dict[str, bool] = {}
+        self._tp_sl_lock_level: Dict[str, float] = {}
         self._entry_times: Dict[str, datetime] = {}
         self._entry_order_ids: Dict[str, str] = {}
 
@@ -174,6 +181,7 @@ class OrderManager:
     def _register_subscribers(self) -> None:
         """Subscribes to EventBus topics."""
         self.bus.subscribe(TickEvent, self.on_tick)
+        self.bus.subscribe(CandleCloseEvent, self.on_candle_close)
         self.bus.subscribe(OrderUpdateEvent, self.on_order_update)
 
     def _check_rate_limit(self) -> None:
@@ -268,6 +276,7 @@ class OrderManager:
             limit_price=limit_price,
             sl_price=signal.stop_loss,
             target_price=signal.target_price,
+            trade_group_id=order_id,
             client_order_tag=client_tag,
             status=OrderStatus.PENDING_NEW,
             created_at_ist=now_ist,
@@ -283,8 +292,10 @@ class OrderManager:
         self._bracket_sl[sym] = signal.stop_loss
         self._bracket_tp[sym] = signal.target_price
         self._initial_sl[sym] = signal.stop_loss
+        self._initial_tp[sym] = signal.target_price
         self._initial_risk[sym] = abs(signal.entry_price - signal.stop_loss)
         self._breakeven_advanced[sym] = False
+        self._tp_sl_lock_level.pop(sym, None)
 
         self.orders[order.order_id] = order
         self._persist_order_to_redis(order)
@@ -315,7 +326,7 @@ class OrderManager:
         exit_side = Side.SELL if pos.side == Side.BUY else Side.BUY
         now_ist = datetime.now(IST_TZ)
 
-        # 1. Stop Loss leg (SL_LIMIT)
+        # 1. Stop Loss leg (SL_LIMIT -> TRIGGER PENDING)
         sl_lim = self.calculate_marketable_limit_price(exit_side, pos.stop_loss)
         sl_id = str(uuid.uuid4())
         sl_order = Order(
@@ -330,13 +341,15 @@ class OrderManager:
             sl_price=pos.stop_loss,
             target_price=pos.target_price,
             is_exit=True,
+            parent_order_id=pos.entry_order_id,
+            trade_group_id=pos.entry_order_id,
             exit_reason="SL_HIT",
             client_order_tag=f"sl_{sl_id[:12]}",
             status=OrderStatus.PENDING_NEW,
             created_at_ist=now_ist,
         )
 
-        # 2. Target leg (LIMIT)
+        # 2. Target leg (LIMIT -> OPEN / LIMIT PENDING)
         tp_id = str(uuid.uuid4())
         tp_order = Order(
             order_id=tp_id,
@@ -349,6 +362,8 @@ class OrderManager:
             sl_price=pos.stop_loss,
             target_price=pos.target_price,
             is_exit=True,
+            parent_order_id=pos.entry_order_id,
+            trade_group_id=pos.entry_order_id,
             exit_reason="TARGET_HIT",
             client_order_tag=f"tp_{tp_id[:12]}",
             status=OrderStatus.PENDING_NEW,
@@ -361,22 +376,126 @@ class OrderManager:
         pos.sl_order_id = sl_order.order_id
         pos.tp_order_id = tp_order.order_id
 
+        is_live_broker = not isinstance(self.broker, PaperBroker)
         placed_sl: Optional[Order] = None
         placed_tp: Optional[Order] = None
         try:
-            self._check_rate_limit()
+            if is_live_broker:
+                self._check_rate_limit()
             placed_sl = await self.broker.submit_order(sl_order)
         except Exception as e:
             logger.error(f"[OCO] Failed to place SL exit leg for {symbol}: {e}")
 
         try:
-            self._check_rate_limit()
+            if is_live_broker:
+                self._check_rate_limit()
             placed_tp = await self.broker.submit_order(tp_order)
         except Exception as e:
             logger.error(f"[OCO] Failed to place Target exit leg for {symbol}: {e}")
 
         self._notify_state_change()
         return {"sl_order": placed_sl, "tp_order": placed_tp}
+
+    async def sync_oco_exit_legs(self, symbol: str) -> None:
+        """Synchronizes resting SL and TP OCO child orders when position SL, TP, or quantity changes."""
+        pos = self.open_positions.get(symbol)
+        if pos is None:
+            return
+        legs = self._oco_legs.get(symbol, {})
+        exit_side = Side.SELL if pos.side == Side.BUY else Side.BUY
+        sl_oid = legs.get("sl_order_id") or pos.sl_order_id
+        tp_oid = legs.get("tp_order_id") or pos.tp_order_id
+
+        if sl_oid and sl_oid in self.orders:
+            sl_ord = self.orders[sl_oid]
+            if sl_ord.status in (OrderStatus.OPEN, OrderStatus.TRIGGER_PENDING, OrderStatus.PENDING_NEW):
+                new_sl_lim = self.calculate_marketable_limit_price(exit_side, pos.stop_loss)
+                if hasattr(self.broker, "modify_order"):
+                    await self.broker.modify_order(
+                        sl_oid,
+                        trigger_price=pos.stop_loss,
+                        limit_price=new_sl_lim,
+                        quantity=pos.quantity,
+                    )
+                else:
+                    sl_ord.trigger_price = round(pos.stop_loss, 2)
+                    sl_ord.sl_price = round(pos.stop_loss, 2)
+                    sl_ord.limit_price = new_sl_lim
+                    sl_ord.quantity = pos.quantity
+                    await self.bus.publish(OrderUpdateEvent(order=sl_ord))
+                self._persist_order_to_redis(sl_ord)
+
+        if tp_oid and tp_oid in self.orders:
+            tp_ord = self.orders[tp_oid]
+            if tp_ord.status in (OrderStatus.OPEN, OrderStatus.TRIGGER_PENDING, OrderStatus.PENDING_NEW):
+                if hasattr(self.broker, "modify_order"):
+                    await self.broker.modify_order(
+                        tp_oid,
+                        limit_price=pos.target_price,
+                        quantity=pos.quantity,
+                    )
+                else:
+                    tp_ord.limit_price = round(pos.target_price, 2)
+                    tp_ord.target_price = round(pos.target_price, 2)
+                    tp_ord.quantity = pos.quantity
+                    await self.bus.publish(OrderUpdateEvent(order=tp_ord))
+                self._persist_order_to_redis(tp_ord)
+
+        self._notify_state_change()
+
+    async def modify_order(
+        self,
+        order_id: str,
+        trigger_price: Optional[float] = None,
+        limit_price: Optional[float] = None,
+    ) -> Optional[Order]:
+        """Modifies a pending SL/TP/LIMIT order price and keeps the attached Position bracket in sync."""
+        ord_obj = self.orders.get(order_id)
+        if ord_obj is None:
+            return None
+        if ord_obj.status not in (OrderStatus.OPEN, OrderStatus.TRIGGER_PENDING, OrderStatus.PENDING_NEW):
+            return ord_obj
+
+        sym = ord_obj.tradingsymbol
+        new_trig = round(float(trigger_price), 2) if trigger_price and trigger_price > 0 else ord_obj.trigger_price
+        new_lim = round(float(limit_price), 2) if limit_price and limit_price > 0 else ord_obj.limit_price
+
+        if hasattr(self.broker, "modify_order"):
+            updated = await self.broker.modify_order(order_id, trigger_price=new_trig, limit_price=new_lim)
+            if updated is not None:
+                ord_obj = updated
+        else:
+            kite = getattr(self.broker, "kite", None)
+            if kite is not None and ord_obj.broker_order_id:
+                try:
+                    kite.modify_order(
+                        variety="regular",
+                        order_id=ord_obj.broker_order_id,
+                        trigger_price=new_trig,
+                        price=new_lim,
+                    )
+                except Exception as exc:
+                    logger.warning(f"[MODIFY ORDER] Kite modify warning for {order_id}: {exc}")
+            ord_obj.trigger_price = new_trig
+            ord_obj.limit_price = new_lim
+            await self.bus.publish(OrderUpdateEvent(order=ord_obj))
+
+        pos = self.open_positions.get(sym)
+        if pos is not None:
+            is_sl = ord_obj.order_type == OrderType.SL_LIMIT or (ord_obj.client_order_tag or "").startswith("sl_")
+            if is_sl and new_trig is not None:
+                pos.stop_loss = new_trig
+                self._bracket_sl[sym] = new_trig
+                ord_obj.sl_price = new_trig
+            elif new_lim is not None and (ord_obj.is_exit or (ord_obj.client_order_tag or "").startswith("tp_")):
+                pos.target_price = new_lim
+                self._bracket_tp[sym] = new_lim
+                ord_obj.target_price = new_lim
+
+        self.orders[order_id] = ord_obj
+        self._persist_order_to_redis(ord_obj)
+        self._notify_state_change()
+        return ord_obj
 
     async def cancel_pending_exit_orders(
         self,
@@ -484,6 +603,8 @@ class OrderManager:
             sl_price=pos.stop_loss,
             target_price=pos.target_price,
             is_exit=True,
+            parent_order_id=pos.entry_order_id,
+            trade_group_id=pos.entry_order_id,
             client_order_tag=f"ex_{exit_oid[:12]}",
             status=OrderStatus.PENDING_NEW,
             exit_reason=exit_code,
@@ -589,10 +710,14 @@ class OrderManager:
                 init_sl = order.sl_price or self._initial_sl.get(sym) or sl
                 self._initial_sl[sym] = init_sl
                 tp = order.target_price or self._bracket_tp.get(sym, round(fill_price * 1.02, 2))
+                init_tp = order.target_price or self._initial_tp.get(sym) or tp
+                self._initial_tp[sym] = init_tp
                 entry_ts = order.created_at_ist or datetime.now(IST_TZ)
 
                 self._entry_times[sym] = entry_ts
                 self._entry_order_ids[sym] = order.order_id
+                if order.trade_group_id is None:
+                    order.trade_group_id = order.order_id
 
                 pos = Position(
                     tradingsymbol=sym,
@@ -605,6 +730,7 @@ class OrderManager:
                     stop_loss=sl,
                     initial_sl_price=init_sl,
                     target_price=tp,
+                    original_target_price=init_tp,
                     entry_time=entry_ts,
                     entry_order_id=order.order_id,
                 )
@@ -617,14 +743,14 @@ class OrderManager:
                     f"@ Rs.{pos.average_entry_price:.2f} (SL={sl:.2f}, TP={tp:.2f})"
                 )
 
-                # In LIVE mode or explicit OCO mode, place paired SL + Target resting exit legs
+                # In both PAPER and LIVE modes (or explicit OCO mode), place paired SL + Target resting exit legs
                 is_live_broker = not isinstance(self.broker, PaperBroker)
-                if (is_live_broker or self.enable_oco_brackets) and getattr(self.broker, "kite", None) is not None or self.enable_oco_brackets:
+                if is_live_broker or self.enable_oco_brackets:
                     await self.place_oco_exit_legs(sym)
 
                 self._notify_state_change()
 
-            # 2. Exit order fill: Capture immutable ClosedTrade BEFORE closing Position
+            # 2. Exit order fill: Capture immutable ClosedTrade BEFORE modifying or closing Position
             elif sym in self.open_positions:
                 pos = self.open_positions[sym]
                 is_exit = (pos.side == Side.BUY and order.side == Side.SELL) or (
@@ -633,6 +759,9 @@ class OrderManager:
                 if is_exit:
                     exit_price = float(order.average_fill_price or order.limit_price or pos.ltp)
                     filled_qty = int(order.filled_quantity or pos.quantity)
+                    is_partial_leg = (
+                        order.exit_reason == "PARTIAL_BOOK_1R" and filled_qty < pos.quantity
+                    )
 
                     # Deduct exact Zerodha statutory charges
                     if hasattr(self.broker, "record_completed_trade"):
@@ -664,10 +793,15 @@ class OrderManager:
                         breakeven_advanced=self._breakeven_advanced.get(sym, False),
                     )
                     order.exit_reason = norm_exit_reason
+                    if order.parent_order_id is None and pos.entry_order_id:
+                        order.parent_order_id = pos.entry_order_id
+                    if order.trade_group_id is None and pos.entry_order_id:
+                        order.trade_group_id = pos.entry_order_id
+
                     exit_ts = datetime.now(IST_TZ)
                     entry_ts = pos.entry_time or self._entry_times.get(sym) or order.created_at_ist or exit_ts
 
-                    # Capture IMMUTABLE snapshot BEFORE deleting open position (preserving original initial_sl_price)
+                    # Capture IMMUTABLE snapshot BEFORE modifying/deleting open position (preserving original initial_sl_price)
                     original_sl = pos.initial_sl_price or self._initial_sl.get(sym) or pos.stop_loss
                     closed_record = ClosedTrade(
                         order_id=order.order_id,
@@ -682,48 +816,213 @@ class OrderManager:
                         realized_pnl=round(realized_pnl, 2),
                         pnl_pct=pnl_pct,
                         exit_reason=norm_exit_reason,
+                        is_partial=is_partial_leg,
                         entry_time=entry_ts,
                         exit_time=exit_ts,
                     )
                     self.closed_trades.append(closed_record)
                     self._persist_closed_trade_to_redis(closed_record)
 
-                    # Immediately cancel opposite paired OCO leg (if any) so zero orphan orders remain
-                    await self.cancel_pending_exit_orders(sym, exclude_order_id=order.order_id)
-
-                    pos.realized_pnl = realized_pnl
-                    del self.open_positions[sym]
-                    self._exiting_symbols.discard(sym)
-                    self._entry_times.pop(sym, None)
-                    self._entry_order_ids.pop(sym, None)
-
-                    # Notify risk gatekeeper and sync cumulative realized PnL
-                    if self.risk_gatekeeper is not None:
-                        self.risk_gatekeeper.close_position(sym, realized_pnl)
-                        self.risk_gatekeeper.realized_daily_pnl = round(
-                            sum(t.realized_pnl for t in self.closed_trades), 2
+                    if is_partial_leg:
+                        # 50% Partial Booking at +1R: reduce remaining qty, move runner SL to breakeven, sync OCO legs
+                        pos.quantity = pos.quantity - filled_qty
+                        pos.realized_pnl = round(pos.realized_pnl + realized_pnl, 2)
+                        pos.partial_booked = True
+                        pos.stop_loss = pos.average_entry_price
+                        self._breakeven_advanced[sym] = True
+                        self._bracket_sl[sym] = pos.stop_loss
+                        dir_sign = 1.0 if pos.side == Side.BUY else -1.0
+                        pos.unrealized_pnl = round(
+                            (pos.ltp - pos.average_entry_price) * pos.quantity * dir_sign, 2
                         )
-                        self._persist_realized_pnl_to_redis(self.risk_gatekeeper.realized_pnl)
+                        if self.risk_gatekeeper is not None:
+                            self.risk_gatekeeper.realized_daily_pnl = round(
+                                sum(t.realized_pnl for t in self.closed_trades), 2
+                            )
+                            self._persist_realized_pnl_to_redis(self.risk_gatekeeper.realized_daily_pnl)
+                        await self.sync_oco_exit_legs(sym)
+                        self._notify_state_change()
+                        logger.info(
+                            f"[PARTIAL BOOKING 50%] {sym} booked {filled_qty} shares @ Rs.{exit_price:.2f} "
+                            f"(Realized: Rs.{realized_pnl:,.2f}); remaining {pos.quantity} shares SL -> Breakeven Rs.{pos.stop_loss:.2f}"
+                        )
+                    else:
+                        # Full Exit: Immediately cancel opposite paired OCO leg (if any) so zero orphan orders remain
+                        await self.cancel_pending_exit_orders(sym, exclude_order_id=order.order_id)
 
-                    self._notify_state_change()
+                        pos.realized_pnl = round(pos.realized_pnl + realized_pnl, 2)
+                        del self.open_positions[sym]
+                        self._exiting_symbols.discard(sym)
+                        self._entry_times.pop(sym, None)
+                        self._entry_order_ids.pop(sym, None)
+                        self._tp_sl_lock_level.pop(sym, None)
+                        self._initial_tp.pop(sym, None)
 
-                    logger.info(
-                        f"[STATE MACHINE] Position closed [{norm_exit_reason}]: {sym} | Entry: {pos.average_entry_price:.2f} | "
-                        f"Exit: {exit_price:.2f} | Net Realized PnL: Rs.{realized_pnl:,.2f}"
-                    )
+                        # Notify risk gatekeeper and sync cumulative realized PnL
+                        if self.risk_gatekeeper is not None:
+                            self.risk_gatekeeper.close_position(sym, realized_pnl)
+                            self.risk_gatekeeper.realized_daily_pnl = round(
+                                sum(t.realized_pnl for t in self.closed_trades), 2
+                            )
+                            self._persist_realized_pnl_to_redis(self.risk_gatekeeper.realized_daily_pnl)
+
+                        self._notify_state_change()
+
+                        logger.info(
+                            f"[STATE MACHINE] Position closed [{norm_exit_reason}]: {sym} | Entry: {pos.average_entry_price:.2f} | "
+                            f"Exit: {exit_price:.2f} | Net Realized PnL: Rs.{realized_pnl:,.2f}"
+                        )
 
         elif order.status in (OrderStatus.CANCELLED, OrderStatus.REJECTED):
             self._exiting_symbols.discard(sym)
             self._notify_state_change()
             logger.warning(f"[STATE MACHINE] Order {order.order_id} ({sym}) reached {order.status.value}")
 
+    async def execute_partial_booking(
+        self,
+        symbol: str,
+        qty_to_book: int,
+        tick: Optional[Tick] = None,
+    ) -> Optional[Order]:
+        """Books partial 50% profits at +1R without closing remaining runner or cancelling OCO brackets."""
+        pos = self.open_positions.get(symbol)
+        if pos is None or qty_to_book <= 0 or qty_to_book >= pos.quantity or pos.partial_booked:
+            return None
+
+        pos.partial_booked = True
+        exit_side = Side.SELL if pos.side == Side.BUY else Side.BUY
+        self._check_rate_limit()
+
+        ref_price = tick.ltp if tick is not None else pos.ltp
+        limit_price = self.calculate_marketable_limit_price(exit_side, ref_price)
+        now_ist = datetime.now(IST_TZ)
+        oid = str(uuid.uuid4())
+        partial_order = Order(
+            order_id=oid,
+            signal_id=None,
+            tradingsymbol=symbol,
+            side=exit_side,
+            product="MIS",
+            order_type=OrderType.LIMIT,
+            quantity=qty_to_book,
+            limit_price=limit_price,
+            sl_price=pos.stop_loss,
+            target_price=pos.target_price,
+            is_exit=True,
+            parent_order_id=pos.entry_order_id,
+            trade_group_id=pos.entry_order_id,
+            client_order_tag=f"pb_{oid[:12]}",
+            status=OrderStatus.PENDING_NEW,
+            exit_reason="PARTIAL_BOOK_1R",
+            created_at_ist=now_ist,
+        )
+
+        self.orders[oid] = partial_order
+        self._persist_order_to_redis(partial_order)
+        try:
+            executed = await self.broker.submit_order(partial_order)
+            return executed
+        except Exception as exc:
+            pos.partial_booked = False
+            logger.error(f"[PARTIAL BOOKING ERROR] {symbol}: {exc}")
+            return None
+
+    async def on_candle_close(self, event: CandleCloseEvent) -> None:
+        """Evaluates Profit-Only Active Trade Manager on every 5-minute candle close."""
+        candle = event.candle
+        if candle.timeframe != Timeframe.M5:
+            return
+        await self.evaluate_profit_trade_manager(candle)
+
+    async def evaluate_profit_trade_manager(self, candle: Candle) -> Optional[str]:
+        """
+        Profit-Only Active Trade Manager evaluated on M5 candle closes.
+        STRICT RULE: Never alters losing or breakeven open positions.
+        1. Unrealized gain >= 50% of distance to TP: steps SL 50% closer to Entry Price.
+        2. Price approaches within 15% of TP with RVOL >= 1.5: extends TP by +1.0R and locks SL at original TP.
+        """
+        from config.settings import settings
+
+        if not getattr(settings, "enable_profit_trade_manager", True):
+            return None
+
+        sym = candle.tradingsymbol
+        pos = self.open_positions.get(sym)
+        if pos is None:
+            return None
+
+        entry = float(pos.average_entry_price)
+        orig_sl = float(pos.initial_sl_price or self._initial_sl.get(sym) or pos.stop_loss)
+        orig_tp = float(pos.original_target_price or self._initial_tp.get(sym) or pos.target_price)
+        risk_r = float(self._initial_risk.get(sym) or abs(entry - orig_sl))
+        if risk_r <= 0.0:
+            risk_r = max(0.5, abs(entry - orig_sl))
+
+        is_long = pos.side == Side.BUY
+        price = float(candle.close)
+        gain = (price - entry) if is_long else (entry - price)
+        tp_dist = (orig_tp - entry) if is_long else (entry - orig_tp)
+
+        # STRICT PROFIT-ONLY GUARD: never alter losing or breakeven positions
+        if gain <= 0 or tp_dist <= 0:
+            return None
+
+        progress = gain / tp_dist
+        action_taken: Optional[str] = None
+        legs_changed = False
+
+        # Rule 1: >= 50% of distance to TP -> step SL 50% closer to Entry Price
+        if progress >= 0.50 and not pos.halfway_sl_stepped:
+            halfway_sl = round((orig_sl + entry) / 2.0, 2)
+            improved = (halfway_sl > pos.stop_loss) if is_long else (halfway_sl < pos.stop_loss)
+            if improved:
+                pos.stop_loss = halfway_sl
+                self._bracket_sl[sym] = halfway_sl
+                legs_changed = True
+                action_taken = "HALFWAY_SL_STEPPED"
+                logger.info(
+                    f"[PROFIT MANAGER] {sym} reached {progress * 100:.0f}% to TP; "
+                    f"SL stepped 50% closer to Entry -> Rs.{pos.stop_loss:.2f}"
+                )
+            pos.halfway_sl_stepped = True
+
+        # Rule 2: Within 15% of TP (progress >= 0.85) with strong RVOL >= 1.5 -> extend TP +1.0R & lock SL at orig_tp
+        if progress >= 0.85 and float(candle.rvol or 0.0) >= 1.5 and not pos.profit_locked_at_tp:
+            extended_tp = round(orig_tp + risk_r, 2) if is_long else round(orig_tp - risk_r, 2)
+            pos.target_price = extended_tp
+            self._bracket_tp[sym] = extended_tp
+
+            # Guard against instant self-stop-out when close is 85%-99% of orig_tp:
+            # lock at orig_tp immediately if price >= orig_tp, otherwise lock at 75% gain now & snap to orig_tp once crossed.
+            at_or_past_orig_tp = (price >= orig_tp) if is_long else (price <= orig_tp)
+            if at_or_past_orig_tp:
+                safe_sl = round(orig_tp, 2)
+            else:
+                safe_sl = round(entry + 0.75 * tp_dist, 2) if is_long else round(entry - 0.75 * tp_dist, 2)
+                self._tp_sl_lock_level[sym] = round(orig_tp, 2)
+
+            if (safe_sl > pos.stop_loss) if is_long else (safe_sl < pos.stop_loss):
+                pos.stop_loss = safe_sl
+                self._bracket_sl[sym] = safe_sl
+            pos.profit_locked_at_tp = True
+            legs_changed = True
+            action_taken = "TP_EXTENDED_SL_LOCKED"
+            logger.info(
+                f"[PROFIT MANAGER RUNNER] {sym} within 15% of TP with RVOL={candle.rvol:.2f} -> "
+                f"TP extended +1.0R to Rs.{pos.target_price:.2f}, SL locked at Rs.{pos.stop_loss:.2f}"
+            )
+
+        if legs_changed:
+            await self.sync_oco_exit_legs(sym)
+        return action_taken
+
     async def on_tick(self, event: TickEvent) -> None:
         """
-        Consumes live ticks to monitor bracket orders and manage 1R breakeven trailing stops:
-        - Advances stop loss to entry price when position moves +1R in profit.
-        - Triggers exit on Stop Loss breach.
-        - Triggers exit on Take Profit target breach.
+        Consumes live ticks to monitor bracket orders, 1R breakeven advance,
+        50% partial profit booking, and hard SL / TP exits.
         """
+        from config.settings import settings
+
         tick = event.tick
         sym = tick.tradingsymbol
         self._latest_ticks[sym] = tick
@@ -733,69 +1032,75 @@ class OrderManager:
 
         pos = self.open_positions[sym]
         pos.ltp = tick.ltp
+        is_long = pos.side == Side.BUY
+        dir_sign = 1.0 if is_long else -1.0
+        pos.unrealized_pnl = round((tick.ltp - pos.average_entry_price) * pos.quantity * dir_sign, 2)
 
-        # Evaluate Long Position
-        if pos.side == Side.BUY:
-            pos.unrealized_pnl = round((tick.ltp - pos.average_entry_price) * pos.quantity, 2)
-            init_sl = self._initial_sl.get(sym, pos.stop_loss)
-            initial_r = self._initial_risk.get(sym, max(0.5, pos.average_entry_price - init_sl))
+        init_sl = self._initial_sl.get(sym, pos.stop_loss)
+        initial_r = self._initial_risk.get(sym, max(0.5, abs(pos.average_entry_price - init_sl)))
+        sl_changed = False
 
-            # 1. Check 1R Breakeven Advance
+        # Snap SL to original TP once extended runner crosses original TP
+        pending_lock = self._tp_sl_lock_level.get(sym)
+        if pending_lock is not None:
+            crossed = (tick.ltp >= pending_lock) if is_long else (tick.ltp <= pending_lock)
+            if crossed and ((pending_lock > pos.stop_loss) if is_long else (pending_lock < pos.stop_loss)):
+                pos.stop_loss = pending_lock
+                self._bracket_sl[sym] = pending_lock
+                self._tp_sl_lock_level.pop(sym, None)
+                sl_changed = True
+
+        # 1. Check +1R Profit Milestone -> 50% Partial Booking & Breakeven Advance
+        hit_1r = (
+            tick.ltp >= (pos.average_entry_price + initial_r)
+            if is_long
+            else tick.ltp <= (pos.average_entry_price - initial_r)
+        )
+        if hit_1r:
             if not self._breakeven_advanced.get(sym, False):
-                if tick.ltp >= (pos.average_entry_price + initial_r):
-                    if pos.stop_loss < pos.average_entry_price:
-                        pos.stop_loss = pos.average_entry_price
-                        self._breakeven_advanced[sym] = True
-                        logger.info(
-                            f"[1R TRAILING STOP ADVANCED] {sym} LONG hit +1R (LTP={tick.ltp:.2f} >= "
-                            f"{pos.average_entry_price + initial_r:.2f}). Stop loss advanced to BREAKEVEN: Rs.{pos.stop_loss:.2f}"
-                        )
+                if (pos.stop_loss < pos.average_entry_price) if is_long else (pos.stop_loss > pos.average_entry_price):
+                    pos.stop_loss = pos.average_entry_price
+                    self._breakeven_advanced[sym] = True
+                    self._bracket_sl[sym] = pos.stop_loss
+                    sl_changed = True
+                    logger.info(
+                        f"[1R TRAILING STOP ADVANCED] {sym} {pos.side.value} hit +1R (LTP={tick.ltp:.2f}). "
+                        f"Stop loss advanced to BREAKEVEN: Rs.{pos.stop_loss:.2f}"
+                    )
 
-            # 2. Check Hard Stop Loss Trigger
-            if tick.ltp <= pos.stop_loss:
-                logger.warning(
-                    f"[STOP LOSS TRIGGERED] {sym} LONG hit SL: LTP Rs.{tick.ltp:.2f} <= SL Rs.{pos.stop_loss:.2f}"
+            if (
+                (
+                    self._explicit_enable_partial_booking
+                    if self._explicit_enable_partial_booking is not None
+                    else getattr(settings, "enable_partial_booking", True)
                 )
-                await self.exit_position(sym, reason="SL_HIT", tick=tick)
-                return
+                and not pos.partial_booked
+                and pos.quantity >= 2
+            ):
+                if sym not in self._exiting_symbols:
+                    qty_to_book = pos.quantity // 2
+                    await self.execute_partial_booking(sym, qty_to_book, tick=tick)
+                    if sym not in self.open_positions:
+                        return
+                    sl_changed = False  # Already synced on partial fill
 
-            # 3. Check Take Profit Target Trigger
-            if tick.ltp >= pos.target_price:
-                logger.info(
-                    f"[TARGET TRIGGERED] {sym} LONG hit Target: LTP Rs.{tick.ltp:.2f} >= TP Rs.{pos.target_price:.2f}"
-                )
-                await self.exit_position(sym, reason="TARGET_HIT", tick=tick)
-                return
+        if sl_changed:
+            await self.sync_oco_exit_legs(sym)
 
-        # Evaluate Short Position
-        elif pos.side == Side.SELL:
-            pos.unrealized_pnl = round((pos.average_entry_price - tick.ltp) * pos.quantity, 2)
-            init_sl = self._initial_sl.get(sym, pos.stop_loss)
-            initial_r = self._initial_risk.get(sym, max(0.5, init_sl - pos.average_entry_price))
+        # 2. Check Hard Stop Loss Trigger
+        hit_sl = (tick.ltp <= pos.stop_loss) if is_long else (tick.ltp >= pos.stop_loss)
+        if hit_sl:
+            logger.warning(
+                f"[STOP LOSS TRIGGERED] {sym} {pos.side.value} hit SL: LTP Rs.{tick.ltp:.2f} vs SL Rs.{pos.stop_loss:.2f}"
+            )
+            await self.exit_position(sym, reason="SL_HIT", tick=tick)
+            return
 
-            # 1. Check 1R Breakeven Advance
-            if not self._breakeven_advanced.get(sym, False):
-                if tick.ltp <= (pos.average_entry_price - initial_r):
-                    if pos.stop_loss > pos.average_entry_price:
-                        pos.stop_loss = pos.average_entry_price
-                        self._breakeven_advanced[sym] = True
-                        logger.info(
-                            f"[1R TRAILING STOP ADVANCED] {sym} SHORT hit +1R (LTP={tick.ltp:.2f} <= "
-                            f"{pos.average_entry_price - initial_r:.2f}). Stop loss advanced to BREAKEVEN: Rs.{pos.stop_loss:.2f}"
-                        )
-
-            # 2. Check Hard Stop Loss Trigger
-            if tick.ltp >= pos.stop_loss:
-                logger.warning(
-                    f"[STOP LOSS TRIGGERED] {sym} SHORT hit SL: LTP Rs.{tick.ltp:.2f} >= SL Rs.{pos.stop_loss:.2f}"
-                )
-                await self.exit_position(sym, reason="SL_HIT", tick=tick)
-                return
-
-            # 3. Check Take Profit Target Trigger
-            if tick.ltp <= pos.target_price:
-                logger.info(
-                    f"[TARGET TRIGGERED] {sym} SHORT hit Target: LTP Rs.{tick.ltp:.2f} <= TP Rs.{pos.target_price:.2f}"
-                )
-                await self.exit_position(sym, reason="TARGET_HIT", tick=tick)
-                return
+        # 3. Check Take Profit Target Trigger
+        hit_tp = (tick.ltp >= pos.target_price) if is_long else (tick.ltp <= pos.target_price)
+        if hit_tp:
+            logger.info(
+                f"[TARGET TRIGGERED] {sym} {pos.side.value} hit Target: LTP Rs.{tick.ltp:.2f} vs TP Rs.{pos.target_price:.2f}"
+            )
+            await self.exit_position(sym, reason="TARGET_HIT", tick=tick)
+            return

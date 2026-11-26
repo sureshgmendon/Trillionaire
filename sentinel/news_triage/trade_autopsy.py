@@ -104,6 +104,78 @@ def compute_session_scorecard(
     }
 
 
+def _build_suggested_toggle_actions(
+    scorecard: Dict[str, Any],
+    closed_trades: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    Maps quantitative session diagnostics directly onto persisted Settings & Keys toggles
+    for instant operator action.
+    """
+    actions: List[Dict[str, Any]] = []
+    losers_by_slot = scorecard.get("time_of_day_losses", {})
+    exit_reasons = scorecard.get("exit_reason_breakdown", {})
+    sl_hits = int(exit_reasons.get("SL_HIT", 0))
+    tp_hits = int(exit_reasons.get("TARGET_HIT", 0))
+    total = int(scorecard.get("total_trades", 0))
+    pf = float(scorecard.get("profit_factor", 0.0))
+
+    morning_losses = losers_by_slot.get("Morning (09:15-11:00)", 0)
+    midday_losses = losers_by_slot.get("Midday (11:00-13:30)", 0)
+
+    if midday_losses > 0:
+        actions.append({
+            "action": "TURN ON: Lunch Volume Filter (RVOL >= 2.0)",
+            "setting_key": "enable_lunch_volume_filter",
+            "recommended_value": True,
+            "reason": f"{midday_losses} losing trade(s) during midday window; require RVOL >= 2.0 between 11:45 and 13:15 IST.",
+        })
+
+    if morning_losses > 0:
+        actions.append({
+            "action": "SET START TIME: 09:30 IST",
+            "setting_key": "entry_start_time_ist",
+            "recommended_value": "09:30",
+            "reason": f"{morning_losses} losing trade(s) in morning volatility; defer entries until 09:30 IST opening stabilization.",
+        })
+
+    if sl_hits > tp_hits or (total > 0 and pf < 1.0):
+        actions.append({
+            "action": "TURN ON: Profit-Only Trade Manager",
+            "setting_key": "enable_profit_trade_manager",
+            "recommended_value": True,
+            "reason": "Step SL 50% closer to Entry at >=50% to TP and lock TP on strong RVOL extensions.",
+        })
+        actions.append({
+            "action": "TURN ON: 50% Partial Profit Booking",
+            "setting_key": "enable_partial_booking",
+            "recommended_value": True,
+            "reason": "Bank 50% quantity at +1R and shift runner SL to breakeven to protect unrealized gains.",
+        })
+        actions.append({
+            "action": "TURN OFF: Mean Reversion",
+            "setting_key": "enable_mean_reversion_strategy",
+            "recommended_value": False,
+            "reason": "Pause counter-trend VWAP+CPR fades while intraday directional stops dominate.",
+        })
+    elif total == 0:
+        actions.append({
+            "action": "SET START TIME: 09:25 IST",
+            "setting_key": "entry_start_time_ist",
+            "recommended_value": "09:25",
+            "reason": "Keep 09:25 IST start armed to catch early opening range breakouts.",
+        })
+    else:
+        actions.append({
+            "action": "TURN ON: Gemini Vision Chart Filter",
+            "setting_key": "enable_vision_filter",
+            "recommended_value": True,
+            "reason": "Maintain pre-order M5 bull/bear trap screening alongside profitable setups.",
+        })
+
+    return actions
+
+
 def _build_rule_based_autopsy(
     scorecard: Dict[str, Any],
     closed_trades: List[Dict[str, Any]],
@@ -150,6 +222,8 @@ def _build_rule_based_autopsy(
         else:
             recs.append("Preserve current risk-per-trade sizing and allow +1R breakeven trailing stops to capture trend extensions.")
 
+    toggle_actions = _build_suggested_toggle_actions(scorecard, closed_trades)
+
     md = "\n".join([
         f"## Post-Market Trade Autopsy ({trade_date.isoformat()})",
         "",
@@ -162,13 +236,22 @@ def _build_rule_based_autopsy(
         "",
         "### (c) Actionable Parameter Recommendations",
         *[f"- {r}" for r in recs],
+        "",
+        "### (d) Suggested Toggle Actions",
+        *[f"- {a['action']}: {a['reason']}" for a in toggle_actions],
     ])
 
     return {
         "loss_and_trap_diagnosis": diagnoses,
         "parameter_recommendations": recs,
+        "suggested_toggle_actions": toggle_actions,
         "markdown_report": md,
     }
+
+
+def _resolve_history_path(artifact_path: Optional[Path] = None) -> Path:
+    base = _resolve_autopsy_path(artifact_path)
+    return base.parent / "latest_trade_autopsy_history.json"
 
 
 async def generate_daily_trade_autopsy(
@@ -208,13 +291,14 @@ async def generate_daily_trade_autopsy(
         f"Closed Trades Ledger: {json.dumps(serialized_trades[-40:])}\n\n"
         "Return strict JSON with keys:\n"
         '  "loss_and_trap_diagnosis": array of 2-4 specific concise strings analyzing time-of-day clustering, regime misfires, or tight ATR stops,\n'
-        '  "parameter_recommendations": array of 2-4 concrete actionable recommendations for tomorrow,\n'
+        '  "parameter_recommendations": array of 2-4 concrete actionable recommendations,\n'
+        '  "suggested_toggle_actions": array of 1-4 objects { "action": "TURN ON: ... | TURN OFF: ... | SET START TIME: ...", "setting_key": "enable_trend_strategy|enable_mean_reversion_strategy|enable_rvol_breakout_strategy|enable_profit_trade_manager|enable_partial_booking|enable_lunch_volume_filter|enable_vision_filter|entry_start_time_ist", "recommended_value": true|false|"09:25"|"09:30", "reason": "brief justification" },\n'
         '  "markdown_report": concise Markdown string covering (a) Session Scorecard, (b) Loss & Trap Diagnosis, and (c) Actionable Parameter Recommendations.\n'
     )
 
     ai_res = await call_gemini_async(
         parts=[{"text": prompt}],
-        model_candidates=("gemini-2.5-pro", "gemini-2.5-flash"),
+        model_candidates=("gemini-3.8-flash", "gemini-2.5-pro"),
         timeout_sec=15.0,
     )
 
@@ -222,26 +306,62 @@ async def generate_daily_trade_autopsy(
         data = ai_res["data"]
         diagnosis = data.get("loss_and_trap_diagnosis") or []
         recommendations = data.get("parameter_recommendations") or []
+        toggle_actions = data.get("suggested_toggle_actions") or _build_suggested_toggle_actions(scorecard, serialized_trades)
         markdown_report = str(data.get("markdown_report") or "")
         source = f"gemini:{ai_res.get('model')}"
     else:
         fallback = _build_rule_based_autopsy(scorecard, serialized_trades, target_date)
         diagnosis = fallback["loss_and_trap_diagnosis"]
         recommendations = fallback["parameter_recommendations"]
+        toggle_actions = fallback["suggested_toggle_actions"]
         markdown_report = fallback["markdown_report"]
         source = "rule_based_fallback"
 
-    report = {
+    ist_time_label = f"{now_ist.strftime('%Y-%m-%d')} • {now_ist.strftime('%H:%M')} IST"
+    report_entry = {
         "trade_date": target_date.isoformat(),
         "generated_at_ist": now_ist.isoformat(),
+        "generated_time_label": ist_time_label,
         "source": source,
         "session_scorecard": scorecard,
         "loss_and_trap_diagnosis": diagnosis,
         "parameter_recommendations": recommendations,
+        "suggested_toggle_actions": toggle_actions,
         "markdown_report": markdown_report,
     }
 
-    # Persist to disk artifact atomically
+    # Update newest-first history stack (up to 12 reviews per session)
+    history: List[Dict[str, Any]] = []
+    hist_path = _resolve_history_path(artifact_path)
+    if enable_redis:
+        try:
+            import redis
+            r_hist = redis.from_url(
+                settings.redis_url,
+                decode_responses=True,
+                socket_connect_timeout=0.3,
+                socket_timeout=0.3,
+            )
+            raw_hist = r_hist.get(f"trillionaire:autopsy:history:{target_date.isoformat()}")
+            if raw_hist:
+                loaded_h = json.loads(raw_hist)
+                if isinstance(loaded_h, list):
+                    history = loaded_h
+        except Exception:
+            pass
+    if not history and hist_path.exists():
+        try:
+            with open(hist_path, "r", encoding="utf-8") as fh:
+                loaded_h = json.load(fh)
+                if isinstance(loaded_h, list):
+                    history = [h for h in loaded_h if h.get("trade_date") == target_date.isoformat()]
+        except Exception:
+            pass
+
+    history = [report_entry, *history][:12]
+    report = {**report_entry, "history": history}
+
+    # Persist latest + history artifacts atomically
     target_path = _resolve_autopsy_path(artifact_path)
     try:
         target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -249,10 +369,15 @@ async def generate_daily_trade_autopsy(
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(report, f, indent=2)
         os.replace(tmp_path, target_path)
+
+        tmp_hist = hist_path.with_suffix(".tmp")
+        with open(tmp_hist, "w", encoding="utf-8") as fh:
+            json.dump(history, fh, indent=2)
+        os.replace(tmp_hist, hist_path)
     except Exception as e:
         logger.warning(f"[TRADE AUTOPSY] Failed saving disk artifact {target_path}: {e}")
 
-    # Persist to Redis under trillionaire:autopsy:{YYYY-MM-DD}
+    # Persist to Redis under trillionaire:autopsy:{YYYY-MM-DD} + history key
     if enable_redis:
         try:
             import redis
@@ -263,6 +388,7 @@ async def generate_daily_trade_autopsy(
                 socket_timeout=0.3,
             )
             r.set(f"trillionaire:autopsy:{target_date.isoformat()}", json.dumps(report), ex=86400 * 7)
+            r.set(f"trillionaire:autopsy:history:{target_date.isoformat()}", json.dumps(history), ex=86400 * 7)
         except Exception as e:
             logger.debug(f"[TRADE AUTOPSY] Redis persist bypassed: {e}")
 
@@ -315,7 +441,45 @@ def load_latest_trade_autopsy(
     if path.exists():
         try:
             with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                loaded = json.load(f)
+                if "history" not in loaded:
+                    loaded["history"] = [loaded]
+                return loaded
         except Exception:
             pass
     return None
+
+
+def load_trade_autopsy_history(
+    trade_date: Optional[date] = None,
+    artifact_path: Optional[Path] = None,
+) -> List[Dict[str, Any]]:
+    """Loads today's newest-first Trade Autopsy review stack from Redis or disk history."""
+    target_date = (trade_date or datetime.now(IST_TZ).date()).isoformat()
+    try:
+        import redis
+        r = redis.from_url(
+            settings.redis_url,
+            decode_responses=True,
+            socket_connect_timeout=0.2,
+            socket_timeout=0.2,
+        )
+        raw = r.get(f"trillionaire:autopsy:history:{target_date}")
+        if raw:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return parsed
+    except Exception:
+        pass
+
+    hist_path = _resolve_history_path(artifact_path)
+    if hist_path.exists():
+        try:
+            with open(hist_path, "r", encoding="utf-8") as fh:
+                parsed = json.load(fh)
+                if isinstance(parsed, list):
+                    return [h for h in parsed if h.get("trade_date") == target_date]
+        except Exception:
+            pass
+    latest = load_latest_trade_autopsy(trade_date=trade_date, artifact_path=artifact_path)
+    return [latest] if latest else []

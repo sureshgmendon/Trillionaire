@@ -112,6 +112,8 @@ export interface Order {
   sl_price?: number;
   target_price?: number;
   is_exit?: boolean;
+  parent_order_id?: string;
+  trade_group_id?: string;
   client_order_tag?: string;
   created_at_ist: string;
 }
@@ -127,6 +129,10 @@ export interface Position {
   stop_loss: number;
   initial_sl_price?: number;
   target_price: number;
+  original_target_price?: number;
+  partial_booked?: boolean;
+  halfway_sl_stepped?: boolean;
+  profit_locked_at_tp?: boolean;
   entry_time?: string;
   entry_order_id?: string;
   sl_order_id?: string;
@@ -146,6 +152,7 @@ export interface ClosedTrade {
   realized_pnl: number;
   pnl_pct: number;
   exit_reason: string;
+  is_partial?: boolean;
   entry_time: string;
   exit_time: string;
 }
@@ -170,13 +177,22 @@ export interface FunnelMetrics {
   passed_stock_rule: number;
   passed_sector_filter: number;
   blocked_by_market_filter?: number;
+  blocked_by_lunch_filter?: number;
   blocked_by_vision_filter?: number;
   signals_emitted: number;
+}
+
+export interface SuggestedToggleAction {
+  action: string;
+  setting_key: string;
+  recommended_value: boolean | string;
+  reason: string;
 }
 
 export interface TradeAutopsyReport {
   trade_date: string;
   generated_at_ist: string;
+  generated_time_label?: string;
   source: string;
   session_scorecard: {
     total_trades: number;
@@ -190,7 +206,9 @@ export interface TradeAutopsyReport {
   };
   loss_and_trap_diagnosis: string[];
   parameter_recommendations: string[];
+  suggested_toggle_actions?: SuggestedToggleAction[];
   markdown_report: string;
+  history?: TradeAutopsyReport[];
 }
 
 export interface PipelineMilestoneItem {
@@ -273,6 +291,14 @@ export interface RuntimeSettings {
   risk_per_trade_pct?: number;
   token_expired?: boolean;
   available_capital_tiers: string[];
+  enable_trend_strategy?: boolean;
+  enable_mean_reversion_strategy?: boolean;
+  enable_rvol_breakout_strategy?: boolean;
+  enable_profit_trade_manager?: boolean;
+  enable_partial_booking?: boolean;
+  enable_lunch_volume_filter?: boolean;
+  enable_vision_filter?: boolean;
+  entry_start_time_ist?: string;
   engine_running: boolean;
   engine_booted: boolean;
   timestamp_ist: string;
@@ -292,6 +318,14 @@ export interface UpdateSettingsPayload {
   active_capital_tier?: string;
   allocated_capital?: number;
   risk_per_trade_pct?: number;
+  enable_trend_strategy?: boolean;
+  enable_mean_reversion_strategy?: boolean;
+  enable_rvol_breakout_strategy?: boolean;
+  enable_profit_trade_manager?: boolean;
+  enable_partial_booking?: boolean;
+  enable_lunch_volume_filter?: boolean;
+  enable_vision_filter?: boolean;
+  entry_start_time_ist?: string;
 }
 
 export interface SnapshotPayload {

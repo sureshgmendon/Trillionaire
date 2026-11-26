@@ -271,8 +271,9 @@ class PreMarketNewsClassifier:
         return aliases.get(sym)
 
     async def _classify_via_gemini(self, news_items: List[NewsItem]) -> Dict[str, NewsSentinelTag]:
-        """Queries Google Gemini API for semantic news risk classification."""
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={settings.gemini_api_key}"
+        """Queries Google Gemini API (gemini-3.8-flash -> gemini-2.5-pro) for semantic news risk classification."""
+        from sentinel.news_triage.gemini_client import call_gemini_async
+
         now = datetime.now(IST_TZ)
 
         headlines_text = "\n".join(f"- {n.headline}: {n.summary}" for n in news_items)
@@ -298,18 +299,15 @@ Respond strictly with valid JSON format:
   ]
 }}
 """
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"response_mime_type": "application/json"},
-        }
-
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            resp = await client.post(url, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-
-        text_content = data["candidates"][0]["content"]["parts"][0]["text"]
-        parsed = json.loads(text_content)
+        ai_res = await call_gemini_async(
+            parts=[{"text": prompt}],
+            model_candidates=("gemini-3.8-flash", "gemini-2.5-pro"),
+            timeout_sec=8.0,
+            api_key=settings.gemini_api_key,
+        )
+        if not ai_res.get("ok") or not isinstance(ai_res.get("data"), dict):
+            raise RuntimeError(str(ai_res.get("error") or "Gemini classification failed"))
+        parsed = ai_res["data"]
 
         results: Dict[str, NewsSentinelTag] = {}
         # Fill defaults

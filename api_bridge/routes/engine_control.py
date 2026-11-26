@@ -98,6 +98,11 @@ class ReplayRequest(BaseModel):
     symbols: Optional[List[str]] = Field(default=None, description="Subset of symbols to replay")
 
 
+class ModifyOrderRequest(BaseModel):
+    trigger_price: Optional[float] = Field(default=None, gt=0, description="Updated SL trigger price")
+    limit_price: Optional[float] = Field(default=None, gt=0, description="Updated limit price")
+
+
 # -----------------------------------------------------------------------------
 # Telemetry Endpoints (Read-Only)
 # -----------------------------------------------------------------------------
@@ -153,16 +158,25 @@ async def get_sentinel_summary(engine: TrillionaireEngine = Depends(get_engine))
 
 
 @router.get("/sentinel/autopsy")
-async def get_trade_autopsy(engine: TrillionaireEngine = Depends(get_engine)) -> Dict[str, Any]:
-    """Returns latest Gemini Trade Autopsy coaching report (or computes on-demand if none persisted today)."""
+async def get_trade_autopsy(
+    auto_generate: bool = Query(True, description="Generate on-demand if no report exists yet today"),
+    engine: TrillionaireEngine = Depends(get_engine),
+) -> Optional[Dict[str, Any]]:
+    """Returns latest Gemini Trade Autopsy coaching report + newest-first session history."""
     from sentinel.news_triage.trade_autopsy import (
         generate_daily_trade_autopsy,
         load_latest_trade_autopsy,
+        load_trade_autopsy_history,
     )
 
     existing = load_latest_trade_autopsy()
     if existing is not None:
+        if not existing.get("history"):
+            existing["history"] = load_trade_autopsy_history()
         return existing
+
+    if not auto_generate:
+        return None
 
     closed = list(getattr(engine.order_manager, "closed_trades", []))
     st = engine.get_status()
@@ -406,6 +420,49 @@ async def cancel_pending_order(
         "status": "cancelled",
         "order_id": order_id,
         "order": order.model_dump(mode="json"),
+        "timestamp_ist": datetime.now(IST_TZ).isoformat(),
+    }
+
+
+@router.post("/control/orders/{order_id}/modify", dependencies=[Depends(verify_admin_api_key)])
+async def modify_pending_order(
+    order_id: str,
+    req: ModifyOrderRequest,
+    engine: TrillionaireEngine = Depends(get_engine),
+) -> Dict[str, Any]:
+    """
+    Modifies trigger_price / limit_price on an active OPEN or TRIGGER PENDING SL/TP child order
+    and keeps the parent open Position bracket in sync.
+    Requires X-API-Key header.
+    """
+    from shared.enums import OrderStatus
+
+    order = engine.order_manager.orders.get(order_id)
+    if order is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Order {order_id} not found",
+        )
+    if order.status not in (OrderStatus.OPEN, OrderStatus.TRIGGER_PENDING, OrderStatus.PENDING_NEW):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Order {order_id} cannot be modified in status {order.status.value}",
+        )
+
+    modified = await engine.order_manager.modify_order(
+        order_id=order_id,
+        trigger_price=req.trigger_price,
+        limit_price=req.limit_price,
+    )
+    try:
+        await telemetry_manager.broadcast_snapshot()
+    except Exception:
+        pass
+
+    return {
+        "status": "modified",
+        "order_id": order_id,
+        "order": modified.model_dump(mode="json") if modified else None,
         "timestamp_ist": datetime.now(IST_TZ).isoformat(),
     }
 
