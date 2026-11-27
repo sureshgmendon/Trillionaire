@@ -162,25 +162,31 @@ async def get_trade_autopsy(
     auto_generate: bool = Query(True, description="Generate on-demand if no report exists yet today"),
     engine: TrillionaireEngine = Depends(get_engine),
 ) -> Optional[Dict[str, Any]]:
-    """Returns latest Gemini Trade Autopsy coaching report + newest-first session history."""
+    """Returns cycle-safe latest Trade Autopsy coaching report + newest-first session history."""
     from sentinel.news_triage.trade_autopsy import (
         generate_daily_trade_autopsy,
         load_latest_trade_autopsy,
         load_trade_autopsy_history,
+        sanitize_json_safe,
     )
 
     existing = load_latest_trade_autopsy()
     if existing is not None:
-        if not existing.get("history"):
-            existing["history"] = load_trade_autopsy_history()
-        return existing
+        clean = sanitize_json_safe({k: v for k, v in existing.items() if k != "history"})
+        hist = existing.get("history") or load_trade_autopsy_history()
+        clean["history"] = [
+            sanitize_json_safe({k: v for k, v in h.items() if k != "history"})
+            for h in (hist or [])
+            if isinstance(h, dict)
+        ]
+        return sanitize_json_safe(clean)
 
     if not auto_generate:
         return None
 
     closed = list(getattr(engine.order_manager, "closed_trades", []))
     st = engine.get_status()
-    return await generate_daily_trade_autopsy(
+    report = await generate_daily_trade_autopsy(
         closed_trades=closed,
         funnel_metrics=st.get("funnel_metrics"),
         daily_mtm=float(st.get("daily_total_mtm", 0.0)),
@@ -188,12 +194,14 @@ async def get_trade_autopsy(
         allocated_capital=float(st.get("allocated_capital", 100000.0)),
         send_telegram=False,
     )
+    return sanitize_json_safe(report)
 
 
 @router.post("/sentinel/autopsy/run", dependencies=[Depends(verify_admin_api_key)])
 async def run_trade_autopsy_now(engine: TrillionaireEngine = Depends(get_engine)) -> Dict[str, Any]:
-    """Triggers immediate generation & persistence of today's Trade Autopsy coaching report."""
-    from sentinel.news_triage.trade_autopsy import generate_daily_trade_autopsy
+    """Triggers immediate generation & persistence of today's Trade Autopsy coaching report + WS broadcast."""
+    from sentinel.news_triage.trade_autopsy import generate_daily_trade_autopsy, sanitize_json_safe
+    from trading_engine.core.event_bus import AutopsyUpdatedEvent
 
     closed = list(getattr(engine.order_manager, "closed_trades", []))
     st = engine.get_status()
@@ -205,7 +213,88 @@ async def run_trade_autopsy_now(engine: TrillionaireEngine = Depends(get_engine)
         allocated_capital=float(st.get("allocated_capital", 100000.0)),
         send_telegram=True,
     )
-    return report
+    safe_report = sanitize_json_safe(report)
+    if hasattr(engine, "bus") and engine.bus is not None:
+        try:
+            await engine.bus.publish(AutopsyUpdatedEvent(report=safe_report))
+        except Exception as exc:
+            logger.debug(f"[AUTOPSY WS BROADCAST] Skipped: {exc}")
+    return safe_report
+
+
+@router.get("/funnel/logs")
+async def get_funnel_logs(
+    stage: str = Query("ALL", description="Stage filter: ALL, EVAL, STOCK, SECTOR, or SIGNAL"),
+    symbol: Optional[str] = Query(None, description="Optional symbol filter"),
+    limit: int = Query(500, ge=1, le=2500),
+    engine: TrillionaireEngine = Depends(get_engine),
+) -> Dict[str, Any]:
+    """Returns structured M5 funnel evaluation logs and live counts across ALL/EVAL/STOCK/SECTOR/SIGNAL."""
+    raw_logs = list(getattr(engine.strategy_runner, "funnel_logs", []))
+    sym_filter = symbol.strip().upper() if symbol and symbol.strip() else None
+    if sym_filter:
+        raw_logs = [row for row in raw_logs if sym_filter in str(row.get("symbol", "")).upper()]
+
+    counts = {
+        "ALL": len(raw_logs),
+        "EVAL": sum(1 for row in raw_logs if row.get("stage") == "EVAL"),
+        "STOCK": sum(1 for row in raw_logs if row.get("stage") == "STOCK"),
+        "SECTOR": sum(1 for row in raw_logs if row.get("stage") == "SECTOR"),
+        "SIGNAL": sum(1 for row in raw_logs if row.get("stage") == "SIGNAL"),
+    }
+
+    stage_upper = stage.strip().upper() if stage else "ALL"
+    filtered = (
+        raw_logs
+        if stage_upper == "ALL"
+        else [row for row in raw_logs if str(row.get("stage") or "").upper() == stage_upper]
+    )
+    # Return newest-first slice capped to `limit`
+    return {
+        "counts": counts,
+        "logs": list(reversed(filtered))[:limit],
+    }
+
+
+@router.get("/reports/export")
+async def export_xlsx_reports(
+    preset: str = Query("today", description="today|yesterday|this_week|this_month|quarterly|half_yearly|yearly|five_years|custom"),
+    from_date: Optional[str] = Query(None, description="YYYY-MM-DD start date when preset=custom"),
+    to_date: Optional[str] = Query(None, description="YYYY-MM-DD end date when preset=custom"),
+    report_type: str = Query("evaluation", description="evaluation or pl"),
+    engine: TrillionaireEngine = Depends(get_engine),
+):
+    """Exports multi-tab Excel (.xlsx) report combining historical archives and live session data."""
+    from trading_engine.core.xlsx_reports import export_reports_xlsx
+
+    rtype = report_type.strip().lower()
+    if rtype not in ("evaluation", "pl"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="report_type must be 'evaluation' or 'pl'",
+        )
+
+    try:
+        xlsx_bytes, filename, is_live, live_label = export_reports_xlsx(
+            preset=preset,
+            report_type=rtype,
+            engine=engine,
+            from_date=from_date,
+            to_date=to_date,
+        )
+    except ValueError as ve:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+
+    return StreamingResponse(
+        iter([xlsx_bytes]),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Report-Is-Live": "true" if is_live else "false",
+            "X-Report-Timestamp": live_label,
+            "Access-Control-Expose-Headers": "Content-Disposition, X-Report-Is-Live, X-Report-Timestamp",
+        },
+    )
 
 
 @router.get("/positions")

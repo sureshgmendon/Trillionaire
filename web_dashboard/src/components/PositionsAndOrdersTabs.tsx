@@ -5,7 +5,8 @@ import {
   Activity,
   Brain,
   Check,
-  Download,
+  ChevronDown,
+  ChevronRight,
   ListOrdered,
   Maximize2,
   Minimize2,
@@ -17,12 +18,14 @@ import {
 } from "lucide-react";
 import { isIstCutoffWindow } from "@/lib/istTime";
 import { computeOpenPositionMetrics } from "@/lib/pnl";
+import { DownloadReportsControl } from "@/components/DownloadReportsControl";
 import {
   AnomalyAlert,
   ClosedTrade,
   Order,
   Position,
   RiskAlert,
+  RuntimeSettings,
   Signal,
   Tick,
   TradeAutopsyReport,
@@ -50,6 +53,7 @@ export interface PositionsAndOrdersTabsProps {
     settingKey: string,
     value: boolean | string
   ) => Promise<{ success: boolean }>;
+  runtimeSettings?: RuntimeSettings | null;
   signals?: Signal[];
   anomalies?: AnomalyAlert[];
   riskAlerts?: RiskAlert[];
@@ -109,67 +113,57 @@ function getLegRole(ord: Order): { label: "EXIT" | "CANCELLED" | "ENTRY"; rank: 
   return { label: "ENTRY", rank: 2 };
 }
 
-interface ExecutedGroup {
-  groupId: string;
+interface StockExecutedGroup {
   symbol: string;
-  latestMs: number;
+  earliestMs: number;
+  totalEntryQty: number;
+  weightedAvgEntry: number;
   legs: Order[];
 }
 
-function groupExecutedOrders(orders: Order[]): ExecutedGroup[] {
-  const byGroup = new Map<string, Order[]>();
-  const chronological = orders
-    .slice()
-    .sort((a, b) => new Date(a.created_at_ist).getTime() - new Date(b.created_at_ist).getTime());
-
-  // Track open/latest round-trip group per symbol for fallback grouping of legacy untagged orders
-  const activeSymbolGroup = new Map<string, string>();
-  let fallbackCounter = 0;
-
-  for (const ord of chronological) {
-    const explicitKey = ord.trade_group_id || ord.parent_order_id;
-    let gKey: string;
-    if (explicitKey) {
-      gKey = explicitKey;
-      activeSymbolGroup.set(ord.tradingsymbol, gKey);
-    } else if (!ord.is_exit) {
-      fallbackCounter += 1;
-      gKey = `sym-${ord.tradingsymbol}-${fallbackCounter}`;
-      activeSymbolGroup.set(ord.tradingsymbol, gKey);
-    } else {
-      gKey = activeSymbolGroup.get(ord.tradingsymbol) || `orphan-${ord.order_id}`;
-    }
-
-    const bucket = byGroup.get(gKey) || [];
+function groupExecutedOrdersByStock(orders: Order[]): StockExecutedGroup[] {
+  const bySymbol = new Map<string, Order[]>();
+  for (const ord of orders) {
+    const sym = ord.tradingsymbol || "UNKNOWN";
+    const bucket = bySymbol.get(sym) || [];
     bucket.push(ord);
-    byGroup.set(gKey, bucket);
-
-    if (ord.is_exit && ord.status === "FILLED" && ord.exit_reason !== "PARTIAL_BOOK_1R") {
-      // Final exit completes this fallback symbol cycle if next entry begins
-      if (!explicitKey) {
-        activeSymbolGroup.delete(ord.tradingsymbol);
-      }
-    }
+    bySymbol.set(sym, bucket);
   }
 
-  const groups: ExecutedGroup[] = [];
-  for (const [groupId, rawLegs] of Array.from(byGroup.entries())) {
+  const groups: StockExecutedGroup[] = [];
+  for (const [symbol, rawLegs] of Array.from(bySymbol.entries())) {
     const legs = rawLegs.slice().sort((a, b) => {
-      const ra = getLegRole(a).rank;
-      const rb = getLegRole(b).rank;
-      if (ra !== rb) return ra - rb;
-      return new Date(b.created_at_ist).getTime() - new Date(a.created_at_ist).getTime();
+      const aExit = a.is_exit || a.status === "CANCELLED" ? 1 : 0;
+      const bExit = b.is_exit || b.status === "CANCELLED" ? 1 : 0;
+      if (aExit !== bExit) return aExit - bExit;
+      return new Date(a.created_at_ist).getTime() - new Date(b.created_at_ist).getTime();
     });
-    const latestMs = Math.max(...legs.map((l) => new Date(l.created_at_ist).getTime() || 0));
+
+    const earliestMs = Math.min(
+      ...legs.map((l) => new Date(l.created_at_ist).getTime() || 0)
+    );
+    const entryLegs = legs.filter((l) => !l.is_exit && l.status === "FILLED");
+    let totalEntryQty = 0;
+    let totalNotional = 0;
+    for (const el of entryLegs) {
+      const q = el.filled_quantity || el.quantity || 0;
+      const p = el.average_fill_price ?? el.limit_price ?? 0;
+      totalEntryQty += q;
+      totalNotional += q * p;
+    }
+    const weightedAvgEntry = totalEntryQty > 0 ? totalNotional / totalEntryQty : 0;
+
     groups.push({
-      groupId,
-      symbol: legs[0]?.tradingsymbol || "",
-      latestMs,
+      symbol,
+      earliestMs,
+      totalEntryQty,
+      weightedAvgEntry,
       legs,
     });
   }
 
-  return groups.sort((a, b) => b.latestMs - a.latestMs);
+  // Order stock blocks by each stock's earliest order timestamp ascending
+  return groups.sort((a, b) => a.earliestMs - b.earliestMs);
 }
 
 function getExitReasonBadgeClass(reason: string): string {
@@ -207,10 +201,12 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
   onCancelOrder,
   onModifyOrder,
   onApplySettingToggle,
+  runtimeSettings = null,
 }) => {
   const [activeTab, setActiveTab] = useState<"OPEN" | "EXECUTED" | "REPORT">("OPEN");
   const [executedSearch, setExecutedSearch] = useState("");
   const [reportSearch, setReportSearch] = useState("");
+  const [collapsedStocks, setCollapsedStocks] = useState<Record<string, boolean>>({});
   const [exitingSymbols, setExitingSymbols] = useState<Record<string, boolean>>({});
   const [cancellingOrders, setCancellingOrders] = useState<Record<string, boolean>>({});
   const [editingOrderId, setEditingOrderId] = useState<string | null>(null);
@@ -328,46 +324,9 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
   }, [executedOrders, executedSearch]);
 
   const groupedExecutedTrades = useMemo(
-    () => groupExecutedOrders(filteredExecutedOrders),
+    () => groupExecutedOrdersByStock(filteredExecutedOrders),
     [filteredExecutedOrders]
   );
-
-  const downloadExecutedCsv = () => {
-    if (filteredExecutedOrders.length === 0) return;
-    const headers = [
-      "Time (IST)",
-      "Type",
-      "Instrument",
-      "Product",
-      "Qty",
-      "Avg Price",
-      "Status",
-      "Reason",
-    ];
-    const rows = filteredExecutedOrders.map((o) =>
-      [
-        formatIstTime(o.created_at_ist),
-        o.side,
-        o.tradingsymbol,
-        o.product || "MIS",
-        `${o.filled_quantity}/${o.quantity}`,
-        (o.average_fill_price ?? o.limit_price ?? 0).toFixed(2),
-        o.status === "FILLED" ? "COMPLETE" : o.status,
-        o.rejection_reason || o.exit_reason || "",
-      ]
-        .map((cell) => `"${String(cell).replace(/"/g, '""')}"`)
-        .join(",")
-    );
-
-    const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows].join("\n");
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `trillionaire_executed_${new Date().toISOString().slice(0, 10)}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
 
   // ---------------------------------------------------------------------------
   // Tab 3: P&L REPORT (Live Running Positions + Immutable Closed Trades Ledger)
@@ -487,108 +446,6 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
     return Math.max(...reportItems.map((i) => Math.abs(i.pnl)), 1);
   }, [reportItems]);
 
-  const escapeCsvRow = (cells: (string | number)[]) =>
-    cells.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(",");
-
-  const triggerCsvDownload = (lines: string[], filename: string) => {
-    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.setAttribute("href", url);
-    link.setAttribute("download", filename);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  };
-
-  const downloadReportCsv = () => {
-    if (filteredReportItems.length === 0 && executedOrders.length === 0) return;
-
-    const lines: string[] = [];
-
-    // Section 1: P&L Report + TOTAL Summary Row
-    lines.push("=== P&L REPORT ===");
-    lines.push(
-      escapeCsvRow([
-        "Product",
-        "Instrument",
-        "Qty",
-        "Avg",
-        "LTP",
-        "P&L",
-        "Chg %",
-        "Status / Exit Reason",
-      ])
-    );
-    for (const item of filteredReportItems) {
-      lines.push(
-        escapeCsvRow([
-          item.product,
-          item.instrument,
-          item.qty,
-          item.avg.toFixed(2),
-          item.ltp.toFixed(2),
-          item.pnl.toFixed(2),
-          `${item.chgPct.toFixed(2)}%`,
-          item.exitReason || (item.isOpen ? "OPEN" : ""),
-        ])
-      );
-    }
-    lines.push(
-      escapeCsvRow([
-        "TOTAL",
-        `Realized: ${totalReportRealized >= 0 ? "+" : ""}${totalReportRealized.toFixed(2)} | Unrealized: ${
-          totalReportUnrealized >= 0 ? "+" : ""
-        }${totalReportUnrealized.toFixed(2)}`,
-        "",
-        "",
-        "",
-        totalReportPnl.toFixed(2),
-        "",
-        "COMBINED TOTAL P&L",
-      ])
-    );
-
-    // Two blank separator rows
-    lines.push("");
-    lines.push("");
-
-    // Section 2: Executed Orders
-    lines.push("=== EXECUTED ORDERS ===");
-    lines.push(
-      escapeCsvRow([
-        "Time",
-        "Type",
-        "Instrument",
-        "Product",
-        "Qty",
-        "Avg Price",
-        "Status",
-        "Exit / Rejection Reason",
-      ])
-    );
-    for (const o of executedOrders) {
-      lines.push(
-        escapeCsvRow([
-          formatIstTime(o.created_at_ist),
-          o.side,
-          o.tradingsymbol,
-          o.product || "MIS",
-          `${o.filled_quantity}/${o.quantity}`,
-          (o.average_fill_price ?? o.limit_price ?? 0).toFixed(2),
-          o.status === "FILLED" ? "COMPLETE" : o.status,
-          o.rejection_reason || o.exit_reason || "",
-        ])
-      );
-    }
-
-    triggerCsvDownload(
-      lines,
-      `trillionaire_pnl_and_orders_${new Date().toISOString().slice(0, 10)}.csv`
-    );
-  };
-
   return (
     <div
       className={
@@ -643,39 +500,28 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
           </button>
         </div>
 
-        {/* Search, CSV & Full-Screen Expand Controls */}
+        {/* Search, XLSX Reports & Full-Screen Expand Controls */}
         <div className="flex items-center space-x-2">
           {activeTab === "EXECUTED" && (
-            <>
-              <div className="relative">
-                <Search className="h-3 w-3 absolute left-2 top-2 text-cockpit-muted" />
-                <input
-                  type="text"
-                  placeholder="Search executed..."
-                  value={executedSearch}
-                  onChange={(e) => setExecutedSearch(e.target.value)}
-                  className="pl-7 pr-6 py-0.5 text-xs bg-cockpit-surface border border-cockpit-border rounded text-white placeholder-cockpit-muted/60 focus:outline-none focus:border-cockpit-borderBright w-36 sm:w-44"
-                />
-                {executedSearch && (
-                  <button
-                    type="button"
-                    onClick={() => setExecutedSearch("")}
-                    className="absolute right-1.5 top-1.5 text-cockpit-muted hover:text-white"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                )}
-              </div>
-              <button
-                type="button"
-                onClick={downloadExecutedCsv}
-                title="Download Executed Orders CSV"
-                className="px-2 py-1 rounded bg-cockpit-surface hover:bg-cockpit-hover border border-cockpit-border text-cockpit-muted hover:text-white text-xs font-mono flex items-center space-x-1 transition"
-              >
-                <Download className="h-3 w-3 text-purple-400" />
-                <span className="hidden sm:inline">CSV</span>
-              </button>
-            </>
+            <div className="relative">
+              <Search className="h-3 w-3 absolute left-2 top-2 text-cockpit-muted" />
+              <input
+                type="text"
+                placeholder="Search executed..."
+                value={executedSearch}
+                onChange={(e) => setExecutedSearch(e.target.value)}
+                className="pl-7 pr-6 py-0.5 text-xs bg-cockpit-surface border border-cockpit-border rounded text-white placeholder-cockpit-muted/60 focus:outline-none focus:border-cockpit-borderBright w-36 sm:w-44"
+              />
+              {executedSearch && (
+                <button
+                  type="button"
+                  onClick={() => setExecutedSearch("")}
+                  className="absolute right-1.5 top-1.5 text-cockpit-muted hover:text-white"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              )}
+            </div>
           )}
 
           {activeTab === "REPORT" && (
@@ -687,7 +533,7 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
                   placeholder="Search P&L..."
                   value={reportSearch}
                   onChange={(e) => setReportSearch(e.target.value)}
-                  className="pl-7 pr-6 py-0.5 text-xs bg-cockpit-surface border border-cockpit-border rounded text-white placeholder-cockpit-muted/60 focus:outline-none focus:border-cockpit-borderBright w-36 sm:w-44"
+                  className="pl-7 pr-6 py-0.5 text-xs bg-cockpit-surface border border-cockpit-border rounded text-white placeholder-cockpit-muted/60 focus:outline-none focus:border-cockpit-borderBright w-28 sm:w-36"
                 />
                 {reportSearch && (
                   <button
@@ -699,15 +545,9 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
                   </button>
                 )}
               </div>
-              <button
-                type="button"
-                onClick={downloadReportCsv}
-                title="Download Combined P&L Report & Executed Orders CSV"
-                className="px-2 py-1 rounded bg-cockpit-surface hover:bg-cockpit-hover border border-cockpit-border text-cockpit-muted hover:text-white text-xs font-mono flex items-center space-x-1 transition"
-              >
-                <Download className="h-3 w-3 text-emerald-400" />
-                <span className="hidden sm:inline">CSV</span>
-              </button>
+              <div className="hidden xl:block">
+                <DownloadReportsControl compact />
+              </div>
             </>
           )}
 
@@ -933,101 +773,158 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
               </thead>
               <tbody className="divide-y divide-cockpit-border/30">
                 {groupedExecutedTrades.map((grp, groupIdx) => {
-                  const groupBg = groupIdx % 2 === 0 ? "bg-slate-900/40" : "bg-slate-800/35";
-                  return grp.legs.map((ord, legIdx) => {
-                    const isBuy = ord.side === "BUY";
-                    const execPrice = ord.average_fill_price ?? ord.limit_price ?? ord.trigger_price ?? 0;
-                    const isComplete = ord.status === "FILLED";
-                    const isRejected = ord.status === "REJECTED";
-                    const reasonBadge = ord.rejection_reason || ord.exit_reason;
-                    const role = getLegRole(ord);
-                    const isSelected = selectedSymbol === ord.tradingsymbol;
+                  const isEven = groupIdx % 2 === 0;
+                  const groupBg = isEven
+                    ? "bg-slate-900/60 border-l-2 border-l-cyan-500/60"
+                    : "bg-slate-800/35 border-l-2 border-l-indigo-500/50";
+                  const isCollapsed = !!collapsedStocks[grp.symbol];
+                  const isGroupSelected = selectedSymbol === grp.symbol;
 
-                    return (
+                  return (
+                    <React.Fragment key={`stock-grp-${grp.symbol}`}>
+                      {/* Compact Stock Group Header Row */}
                       <tr
-                        key={ord.order_id}
-                        onClick={() => onSelectSymbol?.(ord.tradingsymbol)}
-                        className={`cursor-pointer transition ${
-                          isSelected
-                            ? "bg-cockpit-blue/15 border-l-2 border-cockpit-blue"
-                            : `${groupBg} hover:bg-cockpit-surface/70`
-                        } ${legIdx === 0 && groupIdx > 0 ? "border-t-2 border-slate-700/70" : ""}`}
+                        onClick={() => {
+                          setCollapsedStocks((prev) => ({
+                            ...prev,
+                            [grp.symbol]: !prev[grp.symbol],
+                          }));
+                          onSelectSymbol?.(grp.symbol);
+                        }}
+                        className={`cursor-pointer transition ${groupBg} ${
+                          groupIdx > 0 ? "border-t-2 border-slate-700/80" : ""
+                        } ${isGroupSelected ? "ring-1 ring-inset ring-cockpit-blue/40" : "hover:brightness-110"}`}
                       >
-                        <td className="py-2 px-3 text-cockpit-muted whitespace-nowrap">
-                          {formatIstTime(ord.created_at_ist)}
-                        </td>
-                        <td className="py-2 px-2">
-                          <div className="inline-flex items-center space-x-1">
-                            <span
-                              className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                isBuy
-                                  ? "bg-blue-500/20 text-blue-400 border border-blue-500/40"
-                                  : "bg-rose-500/20 text-rose-400 border border-rose-500/40"
-                              }`}
-                            >
-                              {ord.side}
-                            </span>
-                            <span
-                              className={`px-1 py-0.2 rounded text-[8px] font-bold uppercase ${
-                                role.label === "EXIT"
-                                  ? "bg-emerald-500/15 text-emerald-300"
-                                  : role.label === "CANCELLED"
-                                  ? "bg-slate-700/60 text-slate-400"
-                                  : "bg-cyan-500/15 text-cyan-300"
-                              }`}
-                            >
-                              {role.label}
-                            </span>
-                          </div>
-                        </td>
-                        <td className="py-2 px-3 font-bold text-white whitespace-nowrap">
-                          <span>{ord.tradingsymbol}</span>
-                          <span className="ml-1.5 text-[9px] px-1 py-0.2 rounded bg-cockpit-surface border border-cockpit-border text-cockpit-muted font-normal">
-                            {ord.order_type === "SL_LIMIT" ? "SL-L" : "NSE"}
-                          </span>
-                        </td>
-                        <td className="py-2 px-2">
-                          <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-500/20 text-purple-300 border border-purple-500/40">
-                            {ord.product || "MIS"}
-                          </span>
-                        </td>
-                        <td className="py-2 px-2 text-right font-medium text-white tabular-nums">
-                          {ord.filled_quantity}/{ord.quantity}
-                        </td>
-                        <td className="py-2 px-2 text-right font-medium text-white tabular-nums">
-                          ₹{execPrice.toFixed(2)}
-                        </td>
-                        <td className="py-2 px-3 text-right">
-                          <div className="inline-flex items-center space-x-1.5">
-                            {reasonBadge && (
-                              <span
-                                title={reasonBadge}
-                                className={`px-1.5 py-0.5 rounded text-[9px] font-semibold border max-w-[160px] truncate ${
-                                  isRejected
-                                    ? "bg-rose-500/10 text-rose-300 border-rose-500/30"
-                                    : getExitReasonBadgeClass(reasonBadge)
-                                }`}
-                              >
-                                {reasonBadge}
+                        <td colSpan={7} className="py-1.5 px-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                            <div className="flex items-center space-x-2">
+                              {isCollapsed ? (
+                                <ChevronRight className="h-3.5 w-3.5 text-cockpit-muted" />
+                              ) : (
+                                <ChevronDown className="h-3.5 w-3.5 text-cyan-400" />
+                              )}
+                              <span className="font-bold text-white tracking-wide">
+                                {grp.symbol} <span className="text-[10px] text-cockpit-muted font-normal">NSE</span>
                               </span>
-                            )}
-                            <span
-                              title={ord.rejection_reason || ord.exit_reason || ord.status}
-                              className={`px-2 py-0.5 rounded text-[10px] font-semibold uppercase ${
-                                isComplete
-                                  ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40"
-                                  : isRejected
-                                  ? "bg-rose-500/20 text-rose-400 border border-rose-500/40"
-                                  : "bg-slate-700/40 text-slate-400 border border-slate-600/40"
-                              }`}
-                            >
-                              {isComplete ? "COMPLETE" : ord.status}
-                            </span>
+                              <span className="px-1.5 py-0.2 rounded bg-cockpit-surface border border-cockpit-border text-[10px] text-cyan-300 font-semibold">
+                                {grp.legs.length} {grp.legs.length === 1 ? "order" : "orders"}
+                              </span>
+                            </div>
+
+                            <div className="flex items-center space-x-3 text-[10px] text-slate-300">
+                              <span>
+                                Entry Qty: <b className="text-white tabular-nums">{grp.totalEntryQty}</b>
+                              </span>
+                              <span>
+                                Weighted Avg Entry:{" "}
+                                <b className="text-emerald-300 tabular-nums">
+                                  ₹{grp.weightedAvgEntry.toFixed(2)}
+                                </b>
+                              </span>
+                            </div>
                           </div>
                         </td>
                       </tr>
-                    );
-                  });
+
+                      {/* Chronological Rows Inside This Unified Stock Block (Entries First -> Exits/Cancelled) */}
+                      {!isCollapsed &&
+                        grp.legs.map((ord) => {
+                          const isBuy = ord.side === "BUY";
+                          const execPrice =
+                            ord.average_fill_price ?? ord.limit_price ?? ord.trigger_price ?? 0;
+                          const isComplete = ord.status === "FILLED";
+                          const isRejected = ord.status === "REJECTED";
+                          const reasonBadge = ord.rejection_reason || ord.exit_reason;
+                          const role = getLegRole(ord);
+                          const isSelected = selectedSymbol === ord.tradingsymbol;
+
+                          return (
+                            <tr
+                              key={ord.order_id}
+                              onClick={() => onSelectSymbol?.(ord.tradingsymbol)}
+                              className={`cursor-pointer transition ${
+                                isSelected
+                                  ? "bg-cockpit-blue/15 border-l-2 border-cockpit-blue"
+                                  : `${groupBg} hover:bg-cockpit-surface/70`
+                              }`}
+                            >
+                              <td className="py-2 px-3 text-cockpit-muted whitespace-nowrap">
+                                {formatIstTime(ord.created_at_ist)}
+                              </td>
+                              <td className="py-2 px-2">
+                                <div className="inline-flex items-center space-x-1">
+                                  <span
+                                    className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                      isBuy
+                                        ? "bg-blue-500/20 text-blue-400 border border-blue-500/40"
+                                        : "bg-rose-500/20 text-rose-400 border border-rose-500/40"
+                                    }`}
+                                  >
+                                    {ord.side}
+                                  </span>
+                                  <span
+                                    className={`px-1 py-0.2 rounded text-[8px] font-bold uppercase ${
+                                      role.label === "EXIT"
+                                        ? "bg-emerald-500/15 text-emerald-300"
+                                        : role.label === "CANCELLED"
+                                        ? "bg-slate-700/60 text-slate-400"
+                                        : "bg-cyan-500/15 text-cyan-300"
+                                    }`}
+                                  >
+                                    {role.label === "ENTRY" ? `${ord.side} ENTRY` : role.label}
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="py-2 px-3 font-bold text-white whitespace-nowrap">
+                                <span>{ord.tradingsymbol}</span>
+                                <span className="ml-1.5 text-[9px] px-1 py-0.2 rounded bg-cockpit-surface border border-cockpit-border text-cockpit-muted font-normal">
+                                  {ord.order_type === "SL_LIMIT" ? "SL-L" : "NSE"}
+                                </span>
+                              </td>
+                              <td className="py-2 px-2">
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-500/20 text-purple-300 border border-purple-500/40">
+                                  {ord.product || "MIS"}
+                                </span>
+                              </td>
+                              <td className="py-2 px-2 text-right font-medium text-white tabular-nums">
+                                {ord.filled_quantity}/{ord.quantity}
+                              </td>
+                              <td className="py-2 px-2 text-right font-medium text-white tabular-nums">
+                                ₹{execPrice.toFixed(2)}
+                              </td>
+                              <td className="py-2 px-3 text-right">
+                                <div className="inline-flex items-center space-x-1.5">
+                                  {reasonBadge && (
+                                    <span
+                                      title={reasonBadge}
+                                      className={`px-1.5 py-0.5 rounded text-[9px] font-semibold border max-w-[160px] truncate ${
+                                        isRejected
+                                          ? "bg-rose-500/10 text-rose-300 border-rose-500/30"
+                                          : getExitReasonBadgeClass(reasonBadge)
+                                      }`}
+                                    >
+                                      {reasonBadge}
+                                    </span>
+                                  )}
+                                  <span
+                                    title={ord.rejection_reason || ord.exit_reason || ord.status}
+                                    className={`px-2 py-0.5 rounded text-[10px] font-semibold uppercase ${
+                                      isComplete
+                                        ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40"
+                                        : isRejected
+                                        ? "bg-rose-500/20 text-rose-400 border border-rose-500/40"
+                                        : "bg-slate-700/40 text-slate-400 border border-slate-600/40"
+                                    }`}
+                                  >
+                                    {isComplete ? "COMPLETE" : ord.status}
+                                  </span>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                    </React.Fragment>
+                  );
                 })}
               </tbody>
             </table>
@@ -1253,7 +1150,15 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
                 </table>
               </div>
 
-              {/* Hourly & Post-Market Gemini Trade Autopsy Coach Cards (Stacked Newest-First) */}
+              {/* Unified XLSX Download Control Inside P&L Report Section */}
+              <div className="px-3 py-2 border-t border-cockpit-border bg-cockpit-surface/40 flex flex-wrap items-center justify-between gap-2">
+                <span className="text-[10px] font-mono uppercase tracking-wider text-cockpit-muted font-bold">
+                  P&amp;L &amp; Executed Orders Workbook Export (.xlsx)
+                </span>
+                <DownloadReportsControl compact />
+              </div>
+
+              {/* Hourly & Post-Market Trade Autopsy Coach Cards (Stacked Newest-First) */}
               <div className="p-3 border-t border-cockpit-border bg-slate-950/60 space-y-2.5">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center space-x-1.5 text-[11px] font-mono font-bold text-cyan-300">
@@ -1344,14 +1249,30 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
                                 <div className="flex flex-wrap gap-1.5">
                                   {entry.suggested_toggle_actions.map((act, actIdx) => {
                                     const toggleStateKey = `${entry.generated_at_ist}-${act.setting_key}-${actIdx}`;
-                                    const isApplied = !!appliedToggles[toggleStateKey];
+                                    const liveVal = runtimeSettings
+                                      ? (runtimeSettings as any)[act.setting_key]
+                                      : entry.active_runtime_toggles?.[act.setting_key];
+                                    const isAlreadyActive =
+                                      liveVal !== undefined &&
+                                      String(liveVal) === String(act.recommended_value);
+                                    const isApplied = !!appliedToggles[toggleStateKey] || isAlreadyActive;
                                     return (
                                       <div
                                         key={toggleStateKey}
                                         title={act.reason}
-                                        className="inline-flex items-center space-x-1.5 px-2 py-1 rounded bg-slate-900 border border-amber-500/40 text-[10px]"
+                                        className={`inline-flex items-center space-x-1.5 px-2 py-1 rounded bg-slate-900 border text-[10px] ${
+                                          isAlreadyActive
+                                            ? "border-emerald-500/40"
+                                            : "border-amber-500/40"
+                                        }`}
                                       >
-                                        <span className="font-bold text-amber-300">{act.action}</span>
+                                        <span
+                                          className={`font-bold ${
+                                            isAlreadyActive ? "text-emerald-300" : "text-amber-300"
+                                          }`}
+                                        >
+                                          {act.action}
+                                        </span>
                                         {onApplySettingToggle && (
                                           <button
                                             type="button"
@@ -1374,7 +1295,7 @@ export const PositionsAndOrdersTabs: React.FC<PositionsAndOrdersTabsProps> = ({
                                                 : "bg-cockpit-blue/20 hover:bg-cockpit-blue/35 text-cyan-300 border-cyan-500/40"
                                             }`}
                                           >
-                                            {isApplied ? "Applied ✓" : "Apply"}
+                                            {isAlreadyActive ? "✓ ACTIVE" : isApplied ? "Applied ✓" : "Apply"}
                                           </button>
                                         )}
                                       </div>

@@ -9,10 +9,12 @@ Persists reports to Redis + sentinel/artifacts/latest_trade_autopsy.json and not
 
 from collections import Counter
 from datetime import date, datetime
+from enum import Enum
 import json
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from pydantic import BaseModel
 from loguru import logger
 
 from config.settings import settings
@@ -21,6 +23,104 @@ from shared.constants import IST_TZ
 from shared.schemas import ClosedTrade
 
 DEFAULT_AUTOPSY_ARTIFACT = Path(__file__).resolve().parents[1] / "artifacts" / "latest_trade_autopsy.json"
+
+
+def sanitize_json_safe(obj: Any, _seen: Optional[set[int]] = None) -> Any:
+    """
+    Recursively clones and sanitizes arbitrary Python structures into cycle-free JSON-safe primitives.
+    Uses active-ancestor object identity tracking (`_seen`) so self-referential objects cannot raise
+    Pydantic `ValueError: Circular reference detected`.
+    """
+    if obj is None or isinstance(obj, (bool, int, float, str)):
+        return obj
+    if isinstance(obj, Enum):
+        return obj.value
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    if isinstance(obj, Path):
+        return str(obj)
+
+    seen = _seen if _seen is not None else set()
+    obj_id = id(obj)
+    if obj_id in seen:
+        return None
+
+    seen.add(obj_id)
+    try:
+        if isinstance(obj, BaseModel):
+            return sanitize_json_safe(obj.model_dump(mode="json"), seen)
+        if isinstance(obj, dict):
+            return {
+                str(k): sanitize_json_safe(v, seen)
+                for k, v in obj.items()
+            }
+        if isinstance(obj, (list, tuple, set)):
+            return [sanitize_json_safe(item, seen) for item in obj]
+        return str(obj)
+    finally:
+        seen.discard(obj_id)
+
+
+def _get_live_runtime_toggles() -> Dict[str, Any]:
+    """Reads active runtime strategy & booster toggle values from persisted settings."""
+    return {
+        "enable_trend_strategy": bool(getattr(settings, "enable_trend_strategy", True)),
+        "enable_mean_reversion_strategy": bool(getattr(settings, "enable_mean_reversion_strategy", True)),
+        "enable_rvol_breakout_strategy": bool(getattr(settings, "enable_rvol_breakout_strategy", True)),
+        "enable_profit_trade_manager": bool(getattr(settings, "enable_profit_trade_manager", True)),
+        "enable_partial_booking": bool(getattr(settings, "enable_partial_booking", True)),
+        "enable_lunch_volume_filter": bool(getattr(settings, "enable_lunch_volume_filter", True)),
+        "enable_vision_filter": bool(getattr(settings, "enable_vision_filter", True)),
+        "entry_start_time_ist": str(getattr(settings, "entry_start_time_ist", "09:25")),
+    }
+
+
+_SETTING_KEY_ALIASES: Dict[str, str] = {
+    "enable_trend_momentum": "enable_trend_strategy",
+    "enable_mean_reversion": "enable_mean_reversion_strategy",
+    "enable_high_rvol_breakout": "enable_rvol_breakout_strategy",
+    "opening_bell_start_time": "entry_start_time_ist",
+}
+
+
+def _filter_redundant_toggle_actions(
+    actions: List[Dict[str, Any]],
+    live_toggles: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Removes any suggested action that recommends a setting already active in live settings
+    (e.g., never suggests turning ON an already True toggle or setting 09:30 IST if already 09:30).
+    """
+    current = live_toggles or _get_live_runtime_toggles()
+    filtered: List[Dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    for item in actions or []:
+        if not isinstance(item, dict):
+            continue
+        raw_key = str(item.get("setting_key") or "").strip()
+        canonical_key = _SETTING_KEY_ALIASES.get(raw_key, raw_key)
+        rec_val = item.get("recommended_value")
+        if canonical_key in current and canonical_key not in seen_keys:
+            cur_val = current[canonical_key]
+            # Normalize string booleans or HH:MM comparisons
+            if isinstance(cur_val, bool):
+                if isinstance(rec_val, str):
+                    rec_bool = rec_val.strip().lower() in ("true", "1", "on", "yes")
+                else:
+                    rec_bool = bool(rec_val)
+                if cur_val == rec_bool:
+                    continue
+                rec_val = rec_bool
+            elif str(cur_val).strip() == str(rec_val).strip():
+                continue
+            seen_keys.add(canonical_key)
+            filtered.append({
+                "action": str(item.get("action") or f"SET {canonical_key}: {rec_val}"),
+                "setting_key": canonical_key,
+                "recommended_value": rec_val,
+                "reason": str(item.get("reason") or ""),
+            })
+    return filtered
 
 
 def _resolve_autopsy_path(artifact_path: Optional[Path] = None) -> Path:
@@ -107,11 +207,13 @@ def compute_session_scorecard(
 def _build_suggested_toggle_actions(
     scorecard: Dict[str, Any],
     closed_trades: List[Dict[str, Any]],
+    live_toggles: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Maps quantitative session diagnostics directly onto persisted Settings & Keys toggles
-    for instant operator action.
+    while never suggesting settings that are already active in live runtime configuration.
     """
+    current = live_toggles or _get_live_runtime_toggles()
     actions: List[Dict[str, Any]] = []
     losers_by_slot = scorecard.get("time_of_day_losses", {})
     exit_reasons = scorecard.get("exit_reason_breakdown", {})
@@ -123,7 +225,7 @@ def _build_suggested_toggle_actions(
     morning_losses = losers_by_slot.get("Morning (09:15-11:00)", 0)
     midday_losses = losers_by_slot.get("Midday (11:00-13:30)", 0)
 
-    if midday_losses > 0:
+    if midday_losses > 0 and not current.get("enable_lunch_volume_filter", True):
         actions.append({
             "action": "TURN ON: Lunch Volume Filter (RVOL >= 2.0)",
             "setting_key": "enable_lunch_volume_filter",
@@ -131,7 +233,7 @@ def _build_suggested_toggle_actions(
             "reason": f"{midday_losses} losing trade(s) during midday window; require RVOL >= 2.0 between 11:45 and 13:15 IST.",
         })
 
-    if morning_losses > 0:
+    if morning_losses > 0 and current.get("entry_start_time_ist", "09:25") != "09:30":
         actions.append({
             "action": "SET START TIME: 09:30 IST",
             "setting_key": "entry_start_time_ist",
@@ -140,40 +242,43 @@ def _build_suggested_toggle_actions(
         })
 
     if sl_hits > tp_hits or (total > 0 and pf < 1.0):
-        actions.append({
-            "action": "TURN ON: Profit-Only Trade Manager",
-            "setting_key": "enable_profit_trade_manager",
-            "recommended_value": True,
-            "reason": "Step SL 50% closer to Entry at >=50% to TP and lock TP on strong RVOL extensions.",
-        })
-        actions.append({
-            "action": "TURN ON: 50% Partial Profit Booking",
-            "setting_key": "enable_partial_booking",
-            "recommended_value": True,
-            "reason": "Bank 50% quantity at +1R and shift runner SL to breakeven to protect unrealized gains.",
-        })
-        actions.append({
-            "action": "TURN OFF: Mean Reversion",
-            "setting_key": "enable_mean_reversion_strategy",
-            "recommended_value": False,
-            "reason": "Pause counter-trend VWAP+CPR fades while intraday directional stops dominate.",
-        })
-    elif total == 0:
+        if not current.get("enable_profit_trade_manager", True):
+            actions.append({
+                "action": "TURN ON: Profit-Only Trade Manager",
+                "setting_key": "enable_profit_trade_manager",
+                "recommended_value": True,
+                "reason": "Step SL 50% closer to Entry at >=50% to TP and lock TP on strong RVOL extensions.",
+            })
+        if not current.get("enable_partial_booking", True):
+            actions.append({
+                "action": "TURN ON: 50% Partial Profit Booking",
+                "setting_key": "enable_partial_booking",
+                "recommended_value": True,
+                "reason": "Bank 50% quantity at +1R and shift runner SL to breakeven to protect unrealized gains.",
+            })
+        if current.get("enable_mean_reversion_strategy", True):
+            actions.append({
+                "action": "TURN OFF: Mean Reversion",
+                "setting_key": "enable_mean_reversion_strategy",
+                "recommended_value": False,
+                "reason": "Pause counter-trend VWAP+CPR fades while intraday directional stops dominate.",
+            })
+    elif total == 0 and current.get("entry_start_time_ist", "09:25") != "09:25":
         actions.append({
             "action": "SET START TIME: 09:25 IST",
             "setting_key": "entry_start_time_ist",
             "recommended_value": "09:25",
-            "reason": "Keep 09:25 IST start armed to catch early opening range breakouts.",
+            "reason": "Enable 09:25 IST start to catch early opening range breakouts.",
         })
-    else:
+    elif not current.get("enable_vision_filter", True):
         actions.append({
-            "action": "TURN ON: Gemini Vision Chart Filter",
+            "action": "TURN ON: Vision Chart Trap Filter",
             "setting_key": "enable_vision_filter",
             "recommended_value": True,
-            "reason": "Maintain pre-order M5 bull/bear trap screening alongside profitable setups.",
+            "reason": "Enable pre-order M5 bull/bear trap screening alongside active setups.",
         })
 
-    return actions
+    return _filter_redundant_toggle_actions(actions, live_toggles=current)
 
 
 def _build_rule_based_autopsy(
@@ -284,41 +389,48 @@ async def generate_daily_trade_autopsy(
         allocated_capital=allocated_capital,
     )
 
+    live_toggles = _get_live_runtime_toggles()
     prompt = (
         "You are an institutional NSE intraday quantitative trading coach reviewing today's closed trades.\n"
         f"Trade Date (IST): {target_date.isoformat()}\n"
+        f"Current Active Runtime Toggles (DO NOT suggest a value identical to active state): {json.dumps(live_toggles)}\n"
         f"Computed Scorecard: {json.dumps(scorecard)}\n"
         f"Closed Trades Ledger: {json.dumps(serialized_trades[-40:])}\n\n"
         "Return strict JSON with keys:\n"
         '  "loss_and_trap_diagnosis": array of 2-4 specific concise strings analyzing time-of-day clustering, regime misfires, or tight ATR stops,\n'
         '  "parameter_recommendations": array of 2-4 concrete actionable recommendations,\n'
-        '  "suggested_toggle_actions": array of 1-4 objects { "action": "TURN ON: ... | TURN OFF: ... | SET START TIME: ...", "setting_key": "enable_trend_strategy|enable_mean_reversion_strategy|enable_rvol_breakout_strategy|enable_profit_trade_manager|enable_partial_booking|enable_lunch_volume_filter|enable_vision_filter|entry_start_time_ist", "recommended_value": true|false|"09:25"|"09:30", "reason": "brief justification" },\n'
+        '  "suggested_toggle_actions": array of 0-4 objects ONLY for settings that actually differ from Current Active Runtime Toggles: { "action": "TURN ON: ... | TURN OFF: ... | SET START TIME: ...", "setting_key": "enable_trend_strategy|enable_mean_reversion_strategy|enable_rvol_breakout_strategy|enable_profit_trade_manager|enable_partial_booking|enable_lunch_volume_filter|enable_vision_filter|entry_start_time_ist", "recommended_value": true|false|"09:25"|"09:30", "reason": "brief justification" },\n'
         '  "markdown_report": concise Markdown string covering (a) Session Scorecard, (b) Loss & Trap Diagnosis, and (c) Actionable Parameter Recommendations.\n'
     )
 
     ai_res = await call_gemini_async(
         parts=[{"text": prompt}],
-        model_candidates=("gemini-3.8-flash", "gemini-2.5-pro"),
+        model_candidates=("hydrogen", "gemini-3.8-flash"),
         timeout_sec=15.0,
     )
 
     if ai_res.get("ok") and isinstance(ai_res.get("data"), dict):
         data = ai_res["data"]
-        diagnosis = data.get("loss_and_trap_diagnosis") or []
-        recommendations = data.get("parameter_recommendations") or []
-        toggle_actions = data.get("suggested_toggle_actions") or _build_suggested_toggle_actions(scorecard, serialized_trades)
+        diagnosis = [str(d) for d in (data.get("loss_and_trap_diagnosis") or [])]
+        recommendations = [str(r) for r in (data.get("parameter_recommendations") or [])]
+        raw_toggles = data.get("suggested_toggle_actions") or _build_suggested_toggle_actions(
+            scorecard, serialized_trades, live_toggles=live_toggles
+        )
+        toggle_actions = _filter_redundant_toggle_actions(raw_toggles, live_toggles=live_toggles)
         markdown_report = str(data.get("markdown_report") or "")
-        source = f"gemini:{ai_res.get('model')}"
+        source = f"hydrogen:{ai_res.get('model')}"
     else:
         fallback = _build_rule_based_autopsy(scorecard, serialized_trades, target_date)
         diagnosis = fallback["loss_and_trap_diagnosis"]
         recommendations = fallback["parameter_recommendations"]
-        toggle_actions = fallback["suggested_toggle_actions"]
+        toggle_actions = _filter_redundant_toggle_actions(
+            fallback["suggested_toggle_actions"], live_toggles=live_toggles
+        )
         markdown_report = fallback["markdown_report"]
         source = "rule_based_fallback"
 
     ist_time_label = f"{now_ist.strftime('%Y-%m-%d')} • {now_ist.strftime('%H:%M')} IST"
-    report_entry = {
+    report_entry = sanitize_json_safe({
         "trade_date": target_date.isoformat(),
         "generated_at_ist": now_ist.isoformat(),
         "generated_time_label": ist_time_label,
@@ -327,10 +439,12 @@ async def generate_daily_trade_autopsy(
         "loss_and_trap_diagnosis": diagnosis,
         "parameter_recommendations": recommendations,
         "suggested_toggle_actions": toggle_actions,
+        "suggested_actions": toggle_actions,
+        "active_runtime_toggles": live_toggles,
         "markdown_report": markdown_report,
-    }
+    })
 
-    # Update newest-first history stack (up to 12 reviews per session)
+    # Update newest-first history stack (up to 12 reviews per session, flat cycle-free entries only)
     history: List[Dict[str, Any]] = []
     hist_path = _resolve_history_path(artifact_path)
     if enable_redis:
@@ -346,7 +460,11 @@ async def generate_daily_trade_autopsy(
             if raw_hist:
                 loaded_h = json.loads(raw_hist)
                 if isinstance(loaded_h, list):
-                    history = loaded_h
+                    history = [
+                        sanitize_json_safe({k: v for k, v in h.items() if k != "history"})
+                        for h in loaded_h
+                        if isinstance(h, dict)
+                    ]
         except Exception:
             pass
     if not history and hist_path.exists():
@@ -354,12 +472,16 @@ async def generate_daily_trade_autopsy(
             with open(hist_path, "r", encoding="utf-8") as fh:
                 loaded_h = json.load(fh)
                 if isinstance(loaded_h, list):
-                    history = [h for h in loaded_h if h.get("trade_date") == target_date.isoformat()]
+                    history = [
+                        sanitize_json_safe({k: v for k, v in h.items() if k != "history"})
+                        for h in loaded_h
+                        if isinstance(h, dict) and h.get("trade_date") == target_date.isoformat()
+                    ]
         except Exception:
             pass
 
-    history = [report_entry, *history][:12]
-    report = {**report_entry, "history": history}
+    history = [sanitize_json_safe(report_entry), *history][:12]
+    report = sanitize_json_safe({**report_entry, "history": history})
 
     # Persist latest + history artifacts atomically
     target_path = _resolve_autopsy_path(artifact_path)
@@ -421,8 +543,9 @@ def load_latest_trade_autopsy(
     trade_date: Optional[date] = None,
     artifact_path: Optional[Path] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Loads today's Trade Autopsy report from Redis or disk artifact."""
+    """Loads today's Trade Autopsy report from Redis or disk artifact (cycle-safe copy)."""
     target_date = (trade_date or datetime.now(IST_TZ).date()).isoformat()
+    loaded: Optional[Dict[str, Any]] = None
     try:
         import redis
         r = redis.from_url(
@@ -433,21 +556,34 @@ def load_latest_trade_autopsy(
         )
         raw = r.get(f"trillionaire:autopsy:{target_date}")
         if raw:
-            return json.loads(raw)
+            loaded = json.loads(raw)
     except Exception:
         pass
 
-    path = _resolve_autopsy_path(artifact_path)
-    if path.exists():
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-                if "history" not in loaded:
-                    loaded["history"] = [loaded]
-                return loaded
-        except Exception:
-            pass
-    return None
+    if loaded is None:
+        path = _resolve_autopsy_path(artifact_path)
+        if path.exists():
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+            except Exception:
+                loaded = None
+
+    if not isinstance(loaded, dict):
+        return None
+
+    clean_report = sanitize_json_safe({k: v for k, v in loaded.items() if k != "history"})
+    raw_history = loaded.get("history")
+    if isinstance(raw_history, list) and len(raw_history) > 0:
+        clean_history = [
+            sanitize_json_safe({k: v for k, v in h.items() if k != "history"})
+            for h in raw_history
+            if isinstance(h, dict)
+        ]
+    else:
+        clean_history = [sanitize_json_safe(clean_report)]
+    clean_report["history"] = clean_history
+    return sanitize_json_safe(clean_report)
 
 
 def load_trade_autopsy_history(

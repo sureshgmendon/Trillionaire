@@ -19,8 +19,9 @@ uvicorn[standard]>=0.29.0
 # High-Performance In-Memory & Caching
 redis>=5.0.0
 
-# In-memory Vision Chart Rendering
+# In-memory Vision Chart Rendering & XLSX Reporting
 pillow>=10.0.0
+openpyxl>=3.1.0
 
 # Persistent Relational Storage & Async Drivers
 asyncpg>=0.29.0

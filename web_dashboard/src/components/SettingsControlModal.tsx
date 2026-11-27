@@ -755,7 +755,7 @@ export const SettingsControlModal: React.FC<SettingsControlModalProps> = ({
                       <div className="flex items-center space-x-2">
                         <Shield className="h-4 w-4 text-cyan-400" />
                         <span className="text-xs font-bold text-white uppercase tracking-wider">
-                          Engine Pipeline Readiness (5 Milestones)
+                          Engine Pipeline Readiness ({milestones?.total_count ?? 6} Milestones)
                         </span>
                       </div>
                       {milestones && (

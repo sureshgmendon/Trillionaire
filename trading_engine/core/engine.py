@@ -139,6 +139,7 @@ class TrillionaireEngine:
         # Engine state
         self.is_running = False
         self.is_booted = False
+        self.booted_at_ist: Optional[datetime] = None
         self.is_replaying = False
         self.trading_paused = False
         self.current_trade_date: Optional[date] = None
@@ -314,6 +315,7 @@ class TrillionaireEngine:
             await self.boot_premarket()
 
         self.is_running = True
+        self.booted_at_ist = datetime.now(IST_TZ)
         self.data_feeder = DataFeederType.ZERODHA_KITE
 
         # Wire reactive signal routing on EventBus
@@ -624,24 +626,28 @@ class TrillionaireEngine:
 
     def get_lifecycle_milestones(self) -> Dict[str, Any]:
         """
-        Computes structured readiness status for the 5 lifecycle milestones:
+        Computes structured readiness status for the 6 lifecycle milestones:
         1. kite_auth: Kite Session Authorized
-        2. universe_warmed: Universe & Indicators Warmed
-        3. ticker_connected: Live Market Stream Connected
-        4. ticks_flowing: Live Ticks & Candles Flowing
-        5. strategy_armed: Strategy & Risk Execution Armed
+        2. engine_restarted: Engine Restarted (fresh worker booted after token save)
+        3. universe_warmed: Universe & Indicators Warmed
+        4. ticker_connected: Live Market Stream Connected
+        5. ticks_flowing: Live Ticks & Candles Flowing
+        6. strategy_armed: Strategy & Risk Execution Armed
         """
         from shared.constants import KEY_KITE_TOKEN
         from sentinel.calendar_guard.event_calendar import get_market_holiday_name
+        from trading_engine.brokers.kite.auth import DEFAULT_TOKEN_CACHE_FILE
 
         now = datetime.now(IST_TZ)
         today_date = now.date()
         today_iso = today_date.isoformat()
         holiday = get_market_holiday_name(today_date)
 
-        # 1. kite_auth
+        # 1. kite_auth (+ read saved_at_ist for milestone #2)
         kite_auth_status = "waiting"
         kite_auth_detail = "Waiting for daily Kite authentication token"
+        saved_at_dt: Optional[datetime] = None
+        tok_data: Optional[Dict[str, Any]] = None
         try:
             import redis
             from config.settings import settings
@@ -649,28 +655,56 @@ class TrillionaireEngine:
             raw = r.get(KEY_KITE_TOKEN)
             if raw:
                 tok_data = json.loads(raw)
-                if tok_data.get("date") == today_iso:
-                    kite_auth_status = "passed"
-                    kite_auth_detail = f"Session authorized for {today_iso} (expires tomorrow 06:00 IST)"
-                else:
-                    kite_auth_status = "warning"
-                    kite_auth_detail = f"Token is for date {tok_data.get('date')}, today is {today_iso}"
-            else:
-                if getattr(self.broker, "kite", None) is not None:
-                    kite_auth_status = "passed"
-                    kite_auth_detail = "Mock/Internal Kite client authorized"
-                else:
-                    kite_auth_status = "warning"
-                    kite_auth_detail = "Click 'Login with Kite' in Settings to authenticate today's session"
         except Exception:
-            if getattr(self.broker, "kite", None) is not None:
+            tok_data = None
+
+        if tok_data is None and DEFAULT_TOKEN_CACHE_FILE.exists():
+            try:
+                with open(DEFAULT_TOKEN_CACHE_FILE, "r", encoding="utf-8") as tf:
+                    tok_data = json.load(tf)
+            except Exception:
+                tok_data = None
+
+        if tok_data:
+            if tok_data.get("saved_at_ist"):
+                try:
+                    dt_parsed = datetime.fromisoformat(str(tok_data["saved_at_ist"]))
+                    saved_at_dt = dt_parsed.astimezone(IST_TZ) if dt_parsed.tzinfo else dt_parsed.replace(tzinfo=IST_TZ)
+                except Exception:
+                    saved_at_dt = None
+            if tok_data.get("date") == today_iso:
                 kite_auth_status = "passed"
-                kite_auth_detail = "Kite client attached"
+                kite_auth_detail = f"Session authorized for {today_iso} (expires tomorrow 06:00 IST)"
             else:
                 kite_auth_status = "warning"
-                kite_auth_detail = "Kite authentication pending"
+                kite_auth_detail = f"Token is for date {tok_data.get('date')}, today is {today_iso}"
+        else:
+            if getattr(self.broker, "kite", None) is not None:
+                kite_auth_status = "passed"
+                kite_auth_detail = "Mock/Internal Kite client authorized"
+            else:
+                kite_auth_status = "warning"
+                kite_auth_detail = "Click 'Login with Kite' in Settings to authenticate today's session"
 
-        # 2. universe_warmed
+        # 2. engine_restarted
+        if self.booted_at_ist is not None:
+            if saved_at_dt is not None and saved_at_dt > self.booted_at_ist and kite_auth_status == "passed":
+                restarted_status = "warning"
+                restarted_detail = (
+                    f"New token saved at {saved_at_dt.strftime('%H:%M:%S')} IST after worker start "
+                    f"({self.booted_at_ist.strftime('%H:%M:%S')} IST); awaiting respawn"
+                )
+            else:
+                restarted_status = "passed"
+                restarted_detail = f"Fresh worker started at {self.booted_at_ist.strftime('%H:%M:%S')} IST"
+        elif self.is_running:
+            restarted_status = "passed"
+            restarted_detail = "Engine runtime active"
+        else:
+            restarted_status = "waiting"
+            restarted_detail = "Engine not started yet; awaiting start() / respawn"
+
+        # 3. universe_warmed
         prof_count = len(self.strategy_runner.profiles)
         is_warmed = prof_count > 0 and self.is_booted
         if is_warmed:
@@ -680,7 +714,7 @@ class TrillionaireEngine:
             universe_status = "waiting"
             universe_detail = f"{prof_count} profiles active, indicator warmup pending premarket boot"
 
-        # 3. ticker_connected
+        # 4. ticker_connected
         ticker_obj = getattr(self.broker, "ticker", None)
         sub_count = len(getattr(self.broker, "tokens_to_subscribe", []))
         token_expired = bool(getattr(self.broker, "token_expired", False))
@@ -705,7 +739,7 @@ class TrillionaireEngine:
             ticker_status = "waiting"
             ticker_detail = "Ticker not connected. Starts automatically with Engine start"
 
-        # 4. ticks_flowing
+        # 5. ticks_flowing
         recent_ticks_count = len(getattr(self.broker, "latest_ticks", {}))
         if holiday:
             ticks_status = "waiting"
@@ -723,7 +757,7 @@ class TrillionaireEngine:
             ticks_status = "waiting"
             ticks_detail = "Awaiting live market tick feed"
 
-        # 5. strategy_armed
+        # 6. strategy_armed
         is_kill = self.risk_gatekeeper.kill_switch_active
         if is_kill:
             strategy_status = "error"
@@ -740,6 +774,7 @@ class TrillionaireEngine:
 
         milestones = [
             {"id": "kite_auth", "label": "Kite Session Authorized", "status": kite_auth_status, "detail": kite_auth_detail},
+            {"id": "engine_restarted", "label": "Engine Restarted", "status": restarted_status, "detail": restarted_detail},
             {"id": "universe_warmed", "label": "Universe & Indicators Warmed", "status": universe_status, "detail": universe_detail},
             {"id": "ticker_connected", "label": "Live Market Stream Connected", "status": ticker_status, "detail": ticker_detail},
             {"id": "ticks_flowing", "label": "Live Ticks & Candles Flowing", "status": ticks_status, "detail": ticks_detail},

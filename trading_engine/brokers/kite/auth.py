@@ -25,7 +25,8 @@ from config.settings import settings
 from shared.constants import IST_TZ, KEY_KITE_TOKEN
 from shared.exceptions import BrokerConnectionError
 
-DEFAULT_TOKEN_CACHE_FILE = Path(__file__).resolve().parents[4] / "access_token.json"
+ROOT_DIR = Path(__file__).resolve().parents[3]
+DEFAULT_TOKEN_CACHE_FILE = ROOT_DIR / "research_lab" / "artifacts" / "kite_access_token.json"
 
 
 class KiteAuthManager:
@@ -49,6 +50,10 @@ class KiteAuthManager:
         self.password = password or settings.kite_password
         self.totp_secret = totp_secret or settings.kite_totp_secret
         self.token_cache_path = token_cache_path
+        try:
+            self.token_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
         self.redis_url = redis_url or settings.redis_url
         self._http_client = http_client
         self._kite_client = kite_client

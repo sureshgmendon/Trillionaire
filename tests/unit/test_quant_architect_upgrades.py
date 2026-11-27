@@ -5,7 +5,7 @@ Comprehensive verification tests for Quantitative Architect Upgrades:
 3. 50% Partial Profit Booking at +1R + breakeven runner + resized OCO brackets.
 4. Choppy-Lunch Volume Filter (11:45-13:15 IST RVOL>=2.0 while scanning all stocks), 09:25 vs 09:30 start time, & strategy toggles.
 5. Hourly automated AI Trade Autopsy scheduler slots + IST label + newest-first history + SUGGESTED TOGGLE ACTIONS.
-6. Gemini model upgrade to gemini-3.8-flash -> gemini-2.5-pro.
+6. Gemini model upgrade to gemini-3.8-flash -> hydrogen.
 """
 
 from datetime import date, datetime
@@ -442,6 +442,9 @@ async def test_hourly_autopsy_scheduler_and_toggle_recommendations(tmp_path, mon
     - Reports stack newest-first in history with exact IST timestamp labels and SUGGESTED TOGGLE ACTIONS.
     """
     monkeypatch.setattr(settings, "gemini_api_key", "")
+    monkeypatch.setattr(settings, "enable_lunch_volume_filter", False)
+    monkeypatch.setattr(settings, "entry_start_time_ist", "09:25")
+    monkeypatch.setattr(settings, "enable_mean_reversion_strategy", True)
     monkeypatch.setenv("TRILLIONAIRE_STATE_DIR", str(tmp_path))
 
     bus = EventBus()

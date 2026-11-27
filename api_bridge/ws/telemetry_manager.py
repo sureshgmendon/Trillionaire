@@ -21,8 +21,10 @@ from shared.constants import IST_TZ
 from shared.enums import Timeframe
 from trading_engine.core.event_bus import (
     AnomalyAlertEvent,
+    AutopsyUpdatedEvent,
     CandleCloseEvent,
     EventBus,
+    FunnelLogEvent,
     OrderUpdateEvent,
     RiskAlertEvent,
     SignalEvent,
@@ -77,6 +79,8 @@ class TelemetryManager:
         self.bus.subscribe(OrderUpdateEvent, self.on_order_event)
         self.bus.subscribe(AnomalyAlertEvent, self.on_anomaly_event)
         self.bus.subscribe(RiskAlertEvent, self.on_risk_event)
+        self.bus.subscribe(FunnelLogEvent, self.on_funnel_log_event)
+        self.bus.subscribe(AutopsyUpdatedEvent, self.on_autopsy_event)
 
     async def connect(self, websocket: WebSocket) -> None:
         """Accepts a new client connection, tracks it, starts periodic sync if needed, and sends initial SNAPSHOT."""
@@ -138,7 +142,10 @@ class TelemetryManager:
         closed_trades_list: List[Dict[str, Any]] = []
         sentinel_tags_dict: Dict[str, Any] = {}
 
+        recent_funnel_logs: List[Dict[str, Any]] = []
+
         if self.engine is not None:
+            recent_funnel_logs = list(getattr(self.engine.strategy_runner, "funnel_logs", []))[-250:]
             st = self.engine.get_status()
             engine_status = {
                 **st,
@@ -182,6 +189,7 @@ class TelemetryManager:
                 "recent_signals": list(self.signals_buffer),
                 "recent_risk_alerts": list(self.risk_buffer),
                 "recent_anomalies": list(self.anomaly_buffer),
+                "recent_funnel_logs": recent_funnel_logs,
             },
         }
 
@@ -316,6 +324,26 @@ class TelemetryManager:
         }
         await self.broadcast(envelope)
         self._schedule_snapshot_broadcast()
+
+    async def on_funnel_log_event(self, event: FunnelLogEvent) -> None:
+        """Broadcasts individual Funnel Evaluation record in real time over /ws/stream."""
+        envelope = {
+            "type": "FUNNEL_LOG",
+            "timestamp_ist": str(event.log.get("full_timestamp_ist") or datetime.now(IST_TZ).isoformat()),
+            "payload": event.log,
+        }
+        await self.broadcast(envelope)
+
+    async def on_autopsy_event(self, event: AutopsyUpdatedEvent) -> None:
+        """Broadcasts AUTOPSY_UPDATED immediately when hourly or manual Trade Autopsy completes."""
+        from sentinel.news_triage.trade_autopsy import sanitize_json_safe
+
+        envelope = {
+            "type": "AUTOPSY_UPDATED",
+            "timestamp_ist": event.timestamp_ist.isoformat(),
+            "payload": sanitize_json_safe(event.report),
+        }
+        await self.broadcast(envelope)
 
 
 # Singleton broadcaster instance

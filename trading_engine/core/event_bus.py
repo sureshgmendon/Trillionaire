@@ -68,6 +68,19 @@ class RiskAlertEvent:
     timestamp_ist: datetime = field(default_factory=lambda: datetime.now(IST_TZ))
 
 
+@dataclass(frozen=True)
+class FunnelLogEvent:
+    """Dispatched when LiveStrategyRunner evaluates a candle across EVAL/STOCK/SECTOR/SIGNAL stages."""
+    log: Dict[str, Any]
+
+
+@dataclass(frozen=True)
+class AutopsyUpdatedEvent:
+    """Dispatched immediately when hourly or manual AI Trade Autopsy completes."""
+    report: Dict[str, Any]
+    timestamp_ist: datetime = field(default_factory=lambda: datetime.now(IST_TZ))
+
+
 T = TypeVar("T")
 AsyncEventHandler = Callable[[Any], Coroutine[Any, Any, None]]
 SyncEventHandler = Callable[[Any], None]

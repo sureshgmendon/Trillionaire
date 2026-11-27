@@ -2,7 +2,7 @@
 Trillionaire Pre-Order Gemini Vision Chart Trap Filter
 Invoked strictly AFTER LiveStrategyRunner confirms a dual-confirmation signal (never per 5m bar).
 Renders an in-memory dark-mode PNG chart of the last 40 M5 candles + VWAP + EMA(200) + Opening Range
-levels and asks gemini-3.8-flash (fallback gemini-2.5-pro) within a strict 3.5s timeout to veto obvious bull/bear traps.
+levels and asks Hydrogen (or gemini-3.8-flash fallback) within a strict 3.5s timeout to veto obvious bull/bear traps.
 Fails open (approved=True) on missing key, rate limits, errors, or timeout so execution is never delayed.
 """
 
@@ -143,8 +143,8 @@ class VisionTrapFilter:
         timeout_sec: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
-        Evaluates candidate signal chart PNG against gemini-3.8-flash (fallback gemini-2.5-pro) within timeout_sec (default 3.5s).
-        Fails open (approved=True) on missing API key, timeout, rate limit, or error.
+        Evaluates candidate signal chart PNG against Hydrogen / gemini-3.8-flash within timeout_sec (default 3.5s).
+        Fails open (approved=True, confidence=0.5) on missing API key, timeout, rate limit, or error.
         """
         if not getattr(settings, "enable_vision_filter", True):
             return {
@@ -204,7 +204,7 @@ class VisionTrapFilter:
             res = await asyncio.wait_for(
                 call_gemini_async(
                     parts=parts,
-                    model_candidates=("gemini-3.8-flash", "gemini-2.5-pro"),
+                    model_candidates=("hydrogen", "gemini-3.8-flash"),
                     timeout_sec=effective_timeout,
                     api_key=key,
                 ),
@@ -228,7 +228,7 @@ class VisionTrapFilter:
                 "confidence": 0.5,
                 "reason": f"Fail-open: {res.get('error', 'Vision response unavailable')}",
                 "fail_open": True,
-                "model": "gemini-3.8-flash",
+                "model": "hydrogen",
             }
         except asyncio.TimeoutError:
             logger.warning(
@@ -237,9 +237,9 @@ class VisionTrapFilter:
             return {
                 "approved": True,
                 "confidence": 0.5,
-                "reason": f"Fail-open: Gemini Vision timed out (>{effective_timeout:.1f}s)",
+                "reason": f"Fail-open: Hydrogen Vision timed out (>{effective_timeout:.1f}s)",
                 "fail_open": True,
-                "model": "gemini-3.8-flash",
+                "model": "hydrogen",
             }
         except Exception as exc:
             logger.warning(f"[VISION FILTER] Error on {signal.tradingsymbol} ({exc}) — failing open")
@@ -248,5 +248,5 @@ class VisionTrapFilter:
                 "confidence": 0.5,
                 "reason": f"Fail-open: {exc}",
                 "fail_open": True,
-                "model": "gemini-3.8-flash",
+                "model": "hydrogen",
             }

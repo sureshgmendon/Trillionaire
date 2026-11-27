@@ -8,9 +8,10 @@ import { EngineControlsPanel } from "@/components/EngineControlsPanel";
 import { PositionsAndOrdersTabs } from "@/components/PositionsAndOrdersTabs";
 import { ReplayControlModal } from "@/components/ReplayControlModal";
 import { SettingsControlModal } from "@/components/SettingsControlModal";
+import { TrillionaireEvaluationModal } from "@/components/TrillionaireEvaluationModal";
 import { NewsMarquee } from "@/components/NewsMarquee";
 import { useTrillionaireStream } from "@/hooks/useTrillionaireStream";
-import { SentinelHeadline } from "@/types/telemetry";
+import { FunnelStage, SentinelHeadline } from "@/types/telemetry";
 
 export default function CockpitPage() {
   const {
@@ -27,6 +28,8 @@ export default function CockpitPage() {
     profiles,
     sentinelSummary,
     tradeAutopsy,
+    funnelLogs,
+    runtimeSettings,
     selectedSymbol,
     setSelectedSymbol,
     selectedTimeframe,
@@ -52,25 +55,33 @@ export default function CockpitPage() {
   const [isReplayModalOpen, setIsReplayModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<"execution" | "broker" | "alerts">("execution");
+  const [isEvaluationModalOpen, setIsEvaluationModalOpen] = useState(false);
+  const [evaluationStage, setEvaluationStage] = useState<FunnelStage>("ALL");
 
   const selectedProfile = profiles.find((p) => p.tradingsymbol === selectedSymbol);
   const selectedCandles = candles[`${selectedSymbol}_${selectedTimeframe}`] || [];
   const selectedTick = ticks[selectedSymbol];
 
-  // Surface live operational alerts (token expiry, order rejections, circuit breakers) into Sentinel Newswire
+  // Surface genuine operational alerts while shielding SENTINEL NEWSWIRE from Vision fail-open / HTTP errors
   const mergedHeadlines: SentinelHeadline[] = useMemo(() => {
-    const alertItems: SentinelHeadline[] = riskAlerts.slice(0, 5).map((alert) => ({
-      title: `[${alert.level}] ${alert.symbol}: ${alert.message}`,
-      summary: alert.message,
-      source: "Risk Desk",
-      time: new Date(alert.timestamp_ist).toLocaleTimeString("en-IN", {
-        timeZone: "Asia/Kolkata",
-        hour12: false,
-        hour: "2-digit",
-        minute: "2-digit",
-      }) + " IST",
-      category: "SYSTEM_ALERT",
-    }));
+    const alertItems: SentinelHeadline[] = riskAlerts
+      .filter((alert) => {
+        const msg = String(alert.message || "");
+        return !msg.includes("VISION FILTER") && !msg.includes("Fail-open");
+      })
+      .slice(0, 5)
+      .map((alert) => ({
+        title: `[${alert.level}] ${alert.symbol}: ${alert.message}`,
+        summary: alert.message,
+        source: "Risk Desk",
+        time: new Date(alert.timestamp_ist).toLocaleTimeString("en-IN", {
+          timeZone: "Asia/Kolkata",
+          hour12: false,
+          hour: "2-digit",
+          minute: "2-digit",
+        }) + " IST",
+        category: "SYSTEM_ALERT",
+      }));
     const newsItems = sentinelSummary?.headlines || [];
     return [...alertItems, ...newsItems];
   }, [riskAlerts, sentinelSummary?.headlines]);
@@ -99,6 +110,10 @@ export default function CockpitPage() {
         onStopEngine={stopEngine}
         onPauseTrading={pauseTrading}
         onResumeTrading={resumeTrading}
+        onOpenEvaluationModal={(stage) => {
+          setEvaluationStage(stage);
+          setIsEvaluationModalOpen(true);
+        }}
         onRefresh={refreshState}
       />
 
@@ -173,6 +188,7 @@ export default function CockpitPage() {
               onCancelOrder={cancelOrder}
               onModifyOrder={modifyOrder}
               onApplySettingToggle={applySettingToggle}
+              runtimeSettings={runtimeSettings}
               signals={signals}
               anomalies={anomalies}
               riskAlerts={riskAlerts}
@@ -197,6 +213,16 @@ export default function CockpitPage() {
         milestones={status?.milestones}
         sentinelSummary={sentinelSummary}
         tokenExpired={Boolean(status?.token_expired)}
+      />
+
+      {/* Trillionaire Evaluation Report Modal */}
+      <TrillionaireEvaluationModal
+        isOpen={isEvaluationModalOpen}
+        initialStage={evaluationStage}
+        liveLogs={funnelLogs}
+        selectedSymbol={selectedSymbol}
+        onSelectSymbol={setSelectedSymbol}
+        onClose={() => setIsEvaluationModalOpen(false)}
       />
     </div>
   );

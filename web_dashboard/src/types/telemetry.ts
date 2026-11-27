@@ -182,6 +182,25 @@ export interface FunnelMetrics {
   signals_emitted: number;
 }
 
+export type FunnelStage = "ALL" | "EVAL" | "STOCK" | "SECTOR" | "SIGNAL";
+
+export interface FunnelLog {
+  id: string;
+  date_ist: string;
+  timestamp_ist: string;
+  full_timestamp_ist?: string;
+  symbol: string;
+  parent_index: string;
+  regime: string;
+  stage: "EVAL" | "STOCK" | "SECTOR" | "SIGNAL" | string;
+  passed: boolean;
+  close: number;
+  vwap: number | null;
+  ema200: number | null;
+  rvol: number;
+  reason: string;
+}
+
 export interface SuggestedToggleAction {
   action: string;
   setting_key: string;
@@ -207,6 +226,8 @@ export interface TradeAutopsyReport {
   loss_and_trap_diagnosis: string[];
   parameter_recommendations: string[];
   suggested_toggle_actions?: SuggestedToggleAction[];
+  suggested_actions?: SuggestedToggleAction[];
+  active_runtime_toggles?: Record<string, boolean | string>;
   markdown_report: string;
   history?: TradeAutopsyReport[];
 }
@@ -339,6 +360,7 @@ export interface SnapshotPayload {
   recent_orders: Order[];
   recent_risk_alerts: RiskAlert[];
   recent_anomalies: AnomalyAlert[];
+  recent_funnel_logs?: FunnelLog[];
 }
 
 export type TelemetryEnvelope =
@@ -349,4 +371,6 @@ export type TelemetryEnvelope =
   | { type: "EXIT"; timestamp_ist: string; payload: Order }
   | { type: "ANOMALY"; timestamp_ist: string; payload: AnomalyAlert }
   | { type: "RISK"; timestamp_ist: string; payload: RiskAlert }
+  | { type: "FUNNEL_LOG"; timestamp_ist: string; payload: FunnelLog }
+  | { type: "AUTOPSY_UPDATED"; timestamp_ist: string; payload: TradeAutopsyReport }
   | { type: "SNAPSHOT"; timestamp_ist: string; payload: SnapshotPayload };

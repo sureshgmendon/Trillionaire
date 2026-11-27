@@ -271,7 +271,7 @@ class PreMarketNewsClassifier:
         return aliases.get(sym)
 
     async def _classify_via_gemini(self, news_items: List[NewsItem]) -> Dict[str, NewsSentinelTag]:
-        """Queries Google Gemini API (gemini-3.8-flash -> gemini-2.5-pro) for semantic news risk classification."""
+        """Queries Google Gemini API (gemini-3.8-flash -> hydrogen) for semantic news risk classification."""
         from sentinel.news_triage.gemini_client import call_gemini_async
 
         now = datetime.now(IST_TZ)
@@ -301,7 +301,7 @@ Respond strictly with valid JSON format:
 """
         ai_res = await call_gemini_async(
             parts=[{"text": prompt}],
-            model_candidates=("gemini-3.8-flash", "gemini-2.5-pro"),
+            model_candidates=("gemini-3.8-flash", "hydrogen"),
             timeout_sec=8.0,
             api_key=settings.gemini_api_key,
         )

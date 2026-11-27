@@ -12,9 +12,11 @@ import {
   Candle,
   ClosedTrade,
   EngineStatus,
+  FunnelLog,
   Order,
   Position,
   RiskAlert,
+  RuntimeSettings,
   SentinelSummary,
   Signal,
   StockProfile,
@@ -78,6 +80,8 @@ export function useTrillionaireStream() {
   const [profiles, setProfiles] = useState<StockProfile[]>([]);
   const [sentinelSummary, setSentinelSummary] = useState<SentinelSummary | null>(null);
   const [tradeAutopsy, setTradeAutopsy] = useState<TradeAutopsyReport | null>(null);
+  const [funnelLogs, setFunnelLogs] = useState<FunnelLog[]>([]);
+  const [runtimeSettings, setRuntimeSettings] = useState<RuntimeSettings | null>(null);
   const [selectedSymbol, setSelectedSymbol] = useState<string>("RELIANCE");
   const [selectedTimeframe, setSelectedTimeframe] = useState<TimeframeCode>("M5");
 
@@ -95,7 +99,7 @@ export function useTrillionaireStream() {
   const fetchInitialState = useCallback(async () => {
     try {
       const apiBase = getApiBaseUrl();
-      const [statusRes, posRes, ordRes, closedRes, sentinelRes, summaryRes, autopsyRes] = await Promise.allSettled([
+      const [statusRes, posRes, ordRes, closedRes, sentinelRes, summaryRes, autopsyRes, funnelRes, settingsRes] = await Promise.allSettled([
         fetch(`${apiBase}/api/v1/status`),
         fetch(`${apiBase}/api/v1/positions`),
         fetch(`${apiBase}/api/v1/orders`),
@@ -107,6 +111,12 @@ export function useTrillionaireStream() {
           },
         }),
         fetch(`${apiBase}/api/v1/sentinel/autopsy?auto_generate=false`),
+        fetch(`${apiBase}/api/v1/funnel/logs?stage=ALL&limit=500`),
+        fetch(`${apiBase}/api/v1/settings`, {
+          headers: {
+            "X-API-Key": ADMIN_KEY,
+          },
+        }),
       ]);
 
       if (statusRes.status === "fulfilled" && statusRes.value.ok) {
@@ -140,6 +150,18 @@ export function useTrillionaireStream() {
         const aut = await autopsyRes.value.json();
         if (aut && typeof aut === "object" && aut.trade_date) {
           setTradeAutopsy(aut);
+        }
+      }
+      if (funnelRes.status === "fulfilled" && funnelRes.value.ok) {
+        const fData = await funnelRes.value.json();
+        if (Array.isArray(fData?.logs)) {
+          setFunnelLogs(fData.logs);
+        }
+      }
+      if (settingsRes.status === "fulfilled" && settingsRes.value.ok) {
+        const sData = await settingsRes.value.json();
+        if (sData && typeof sData === "object") {
+          setRuntimeSettings(sData);
         }
       }
     } catch (err) {
@@ -244,6 +266,9 @@ export function useTrillionaireStream() {
         if (payload.recent_orders) setOrders(payload.recent_orders);
         if (payload.recent_risk_alerts) setRiskAlerts(payload.recent_risk_alerts);
         if (payload.recent_anomalies) setAnomalies(payload.recent_anomalies);
+        if (payload.recent_funnel_logs && payload.recent_funnel_logs.length > 0) {
+          setFunnelLogs(payload.recent_funnel_logs.slice().reverse());
+        }
         if (payload.sentinel_tags) {
           const sTags = payload.sentinel_tags;
           setProfiles((prev) =>
@@ -309,6 +334,18 @@ export function useTrillionaireStream() {
       case "RISK": {
         const risk = envelope.payload;
         setRiskAlerts((prev) => [risk, ...prev.slice(0, 99)]);
+        break;
+      }
+      case "FUNNEL_LOG": {
+        const log = envelope.payload;
+        setFunnelLogs((prev) => [log, ...prev.filter((item) => item.id !== log.id).slice(0, 499)]);
+        break;
+      }
+      case "AUTOPSY_UPDATED": {
+        const rep = envelope.payload;
+        if (rep && typeof rep === "object") {
+          setTradeAutopsy(rep);
+        }
         break;
       }
       default:
@@ -522,8 +559,11 @@ export function useTrillionaireStream() {
     // 15s Market-Hours Stale-Tick Watchdog (09:15-15:30 IST Mon-Fri)
     const staleTickWatchdog = setInterval(() => {
       if (!isMarketHoursIST()) return;
-      const summaryLabel = statusRef.current?.milestones?.summary_label;
-      if (summaryLabel === "5/5 READY" && Date.now() - lastTickAtRef.current >= 15000) {
+      const ms = statusRef.current?.milestones;
+      const isReady =
+        ms?.summary_label?.endsWith("READY") ||
+        (ms && ms.total_count > 0 && ms.passed_count === ms.total_count);
+      if (isReady && Date.now() - lastTickAtRef.current >= 15000) {
         console.warn("[WATCHDOG] 15s stale ticks while 5/5 READY — reconnecting WS and refreshing status");
         lastTickAtRef.current = Date.now();
         if (wsRef.current) {
@@ -716,6 +756,8 @@ export function useTrillionaireStream() {
     profiles,
     sentinelSummary,
     tradeAutopsy,
+    funnelLogs,
+    runtimeSettings,
     selectedSymbol,
     setSelectedSymbol,
     selectedTimeframe,

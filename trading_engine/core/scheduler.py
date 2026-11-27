@@ -180,6 +180,9 @@ class WeekdayMarketScheduler:
                 send_telegram=True,
             )
             self.last_autopsy_report = report
+            if report is not None and hasattr(self.engine, "bus") and self.engine.bus is not None:
+                from trading_engine.core.event_bus import AutopsyUpdatedEvent
+                await self.engine.bus.publish(AutopsyUpdatedEvent(report=report))
             return report
         except Exception as exc:
             logger.error(f"[SCHEDULER 03:35 PM] Trade Autopsy generation error: {exc}")
@@ -187,13 +190,29 @@ class WeekdayMarketScheduler:
 
     async def trigger_post_market_stop(self, trade_date: Optional[date] = None) -> None:
         """
-        Generates 03:35 PM IST Gemini Trade Autopsy coaching report and halts real-time streaming
-        while keeping scheduler armed for tomorrow.
+        Generates 03:35 PM IST AI Trade Autopsy coaching report, archives daily date-wise XLSX workbooks
+        (Trillionaire_Evaluation_Report & Trillionaire_PL_Report), and halts real-time streaming.
         """
         target_date = trade_date or datetime.now(IST_TZ).date()
-        logger.info(f"[SCHEDULER 03:35 PM] Executing post-market autopsy & engine shutdown for {target_date}...")
+        logger.info(f"[SCHEDULER 03:35 PM] Executing post-market autopsy, XLSX archive & shutdown for {target_date}...")
 
         await self.generate_daily_trade_autopsy(trade_date=target_date)
+
+        try:
+            from trading_engine.core.xlsx_reports import archive_daily_reports
+
+            om = getattr(self.engine, "order_manager", None)
+            sr = getattr(self.engine, "strategy_runner", None)
+            archive_daily_reports(
+                trade_date=target_date,
+                funnel_logs=list(getattr(sr, "funnel_logs", [])) if sr else [],
+                closed_trades=list(getattr(om, "closed_trades", [])) if om else [],
+                open_positions=list(getattr(om, "open_positions", {}).values()) if om else [],
+                orders=list(getattr(om, "orders", {}).values()) if om else [],
+                ticks=dict(getattr(om, "_latest_ticks", {})) if om else {},
+            )
+        except Exception as exc:
+            logger.error(f"[SCHEDULER 03:35 PM] Daily XLSX archiving error: {exc}")
 
         if self.engine.is_running:
             await self.engine.stop()

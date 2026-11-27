@@ -13,6 +13,7 @@ from datetime import datetime, time
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+import uuid
 from loguru import logger
 
 from config.settings import settings
@@ -28,6 +29,7 @@ from shared.schemas import Candle, NewsSentinelTag, Signal, StockProfile, Tick
 from trading_engine.core.event_bus import (
     CandleCloseEvent,
     EventBus,
+    FunnelLogEvent,
     RiskAlertEvent,
     SignalEvent,
     TickEvent,
@@ -107,6 +109,8 @@ class LiveStrategyRunner:
             "blocked_by_vision_filter": 0,
             "signals_emitted": 0,
         }
+        # Rolling evaluation logs across EVAL / STOCK / SECTOR / SIGNAL (max 2500 records)
+        self.funnel_logs: deque[Dict[str, Any]] = deque(maxlen=2500)
 
         # Wire up event subscriptions
         self._register_subscribers()
@@ -177,6 +181,43 @@ class LiveStrategyRunner:
                 or_l = min(current_or[1], tick.ltp)
                 self._opening_ranges[sym] = (or_h, or_l)
 
+    async def _record_funnel_log(
+        self,
+        candle: Candle,
+        profile: Optional[StockProfile],
+        stage: str,
+        passed: bool,
+        reason: str,
+    ) -> Dict[str, Any]:
+        """Appends a structured stage evaluation entry into rolling funnel_logs and emits FunnelLogEvent."""
+        bar_ist = (
+            candle.timestamp_ist.astimezone(IST_TZ)
+            if candle.timestamp_ist.tzinfo
+            else candle.timestamp_ist.replace(tzinfo=IST_TZ)
+        )
+        entry: Dict[str, Any] = {
+            "id": str(uuid.uuid4()),
+            "date_ist": bar_ist.date().isoformat(),
+            "timestamp_ist": bar_ist.strftime("%H:%M:%S"),
+            "full_timestamp_ist": bar_ist.isoformat(),
+            "symbol": candle.tradingsymbol,
+            "parent_index": profile.parent_index if profile else "",
+            "regime": profile.cluster_regime.value if profile else "",
+            "stage": stage,
+            "passed": bool(passed),
+            "close": round(float(candle.close), 2),
+            "vwap": round(float(candle.vwap), 2) if candle.vwap is not None else None,
+            "ema200": round(float(candle.ema_200), 2) if candle.ema_200 is not None else None,
+            "rvol": round(float(candle.rvol), 2) if candle.rvol is not None else 0.0,
+            "reason": reason,
+        }
+        self.funnel_logs.append(entry)
+        try:
+            await self.bus.publish(FunnelLogEvent(log=entry))
+        except Exception:
+            pass
+        return entry
+
     async def on_candle_close(self, event: CandleCloseEvent) -> Optional[Signal]:
         """
         EventBus handler for CandleCloseEvent.
@@ -219,12 +260,15 @@ class LiveStrategyRunner:
         # Strategy Regime Toggles (persisted in Settings & Keys)
         if profile.cluster_regime == ClusterRegime.TREND_MOMENTUM and not getattr(settings, "enable_trend_strategy", True):
             logger.debug(f"[STRATEGY TOGGLE] TREND_MOMENTUM disabled; skipping {sym}")
+            await self._record_funnel_log(candle, profile, "EVAL", False, "TREND_MOMENTUM disabled in Settings")
             return None
         if profile.cluster_regime == ClusterRegime.MEAN_REVERSION and not getattr(settings, "enable_mean_reversion_strategy", True):
             logger.debug(f"[STRATEGY TOGGLE] MEAN_REVERSION disabled; skipping {sym}")
+            await self._record_funnel_log(candle, profile, "EVAL", False, "MEAN_REVERSION disabled in Settings")
             return None
         if profile.cluster_regime == ClusterRegime.HIGH_RVOL_BREAKOUT and not getattr(settings, "enable_rvol_breakout_strategy", True):
             logger.debug(f"[STRATEGY TOGGLE] HIGH_RVOL_BREAKOUT disabled; skipping {sym}")
+            await self._record_funnel_log(candle, profile, "EVAL", False, "HIGH_RVOL_BREAKOUT disabled in Settings")
             return None
 
         # 1. Gate 1: Pre-Market Sentinel Risk Assessment
@@ -233,6 +277,7 @@ class LiveStrategyRunner:
             logger.info(
                 f"[GATE 1 BLOCKED] {sym} is locked out by Sentinel: {tag.status.value} - {tag.reason}"
             )
+            await self._record_funnel_log(candle, profile, "EVAL", False, f"Sentinel DO_NOT_TRADE: {tag.reason}")
             return None
 
         # 2. Gate 2: Flash Volatility Anomaly Freeze Guard (MEAN_REVERSION only)
@@ -241,7 +286,16 @@ class LiveStrategyRunner:
                 logger.info(
                     f"[GATE 2 BLOCKED] {sym} MEAN_REVERSION is temporarily frozen due to flash volatility"
                 )
+                await self._record_funnel_log(candle, profile, "EVAL", False, "Frozen by flash volatility anomaly guard")
                 return None
+
+        await self._record_funnel_log(
+            candle,
+            profile,
+            "EVAL",
+            True,
+            f"Evaluated M5 bar ({profile.cluster_regime.value} | RVOL={float(candle.rvol or 0.0):.2f})",
+        )
 
         # 3. Gate 3: Dual Confirmation with Parent Sector Index
         parent_index = profile.parent_index
@@ -250,6 +304,7 @@ class LiveStrategyRunner:
             logger.debug(
                 f"Parent index '{parent_index}' M5 candle not yet available for confirmation of {sym}"
             )
+            await self._record_funnel_log(candle, profile, "STOCK", False, f"Parent index {parent_index} bar unavailable")
             return None
 
         # Build strategy evaluation bar payloads
@@ -336,6 +391,29 @@ class LiveStrategyRunner:
 
         if passed_stock:
             self.funnel_metrics["passed_stock_rule"] += 1
+            await self._record_funnel_log(
+                candle,
+                profile,
+                "STOCK",
+                True,
+                f"Stock rule passed ({profile.cluster_regime.value} | Close={c:.2f}, VWAP={v}, RVOL={float(candle.rvol or 0.0):.2f})",
+            )
+            await self._record_funnel_log(
+                candle,
+                profile,
+                "SECTOR",
+                bool(passed_sector),
+                f"Sector {parent_index} {'confirmed' if passed_sector else 'diverged/not aligned'} "
+                f"(Idx Close={idx_candle.close:.2f}, Idx VWAP={idx_candle.vwap})",
+            )
+        else:
+            await self._record_funnel_log(
+                candle,
+                profile,
+                "STOCK",
+                False,
+                f"Stock rule not met for {profile.cluster_regime.value} (Close={c:.2f}, ORH={oh}, ORL={ol})",
+            )
         if passed_sector:
             self.funnel_metrics["passed_sector_filter"] += 1
 
@@ -363,10 +441,11 @@ class LiveStrategyRunner:
                     self.funnel_metrics["blocked_by_lunch_filter"] = (
                         self.funnel_metrics.get("blocked_by_lunch_filter", 0) + 1
                     )
-                    logger.info(
-                        f"[LUNCH VOLUME FILTER] {sym} {signal.side.value} blocked in 11:45-13:15 IST window "
-                        f"(RVOL={float(candle.rvol or 0.0):.2f} < 2.00)"
+                    msg = (
+                        f"Blocked by Lunch Volume Filter (11:45-13:15 IST): RVOL={float(candle.rvol or 0.0):.2f} < 2.00"
                     )
+                    logger.info(f"[LUNCH VOLUME FILTER] {sym} {signal.side.value} {msg}")
+                    await self._record_funnel_log(candle, profile, "SIGNAL", False, msg)
                     return None
 
             # Gate 4: Broad Market (NIFTY 50) Trend Filter
@@ -375,20 +454,24 @@ class LiveStrategyRunner:
                 nifty_ema_20 = self._index_ema_20.get("NIFTY 50", nifty_candle.vwap)
                 if signal.side == Side.BUY and (nifty_candle.close < nifty_candle.vwap or nifty_candle.close < nifty_ema_20):
                     self.funnel_metrics["blocked_by_market_filter"] = self.funnel_metrics.get("blocked_by_market_filter", 0) + 1
+                    msg = f"Blocked by NIFTY 50 market filter (BUY while NIFTY below VWAP/EMA20)"
                     logger.info(
                         f"[MARKET FILTER BLOCKED] BUY signal on {sym} blocked: NIFTY 50 below VWAP/EMA20 "
                         f"(Close={nifty_candle.close:.2f}, VWAP={nifty_candle.vwap:.2f}, EMA20={nifty_ema_20:.2f})"
                     )
+                    await self._record_funnel_log(candle, profile, "SIGNAL", False, msg)
                     return None
                 elif signal.side == Side.SELL and (nifty_candle.close > nifty_candle.vwap or nifty_candle.close > nifty_ema_20):
                     self.funnel_metrics["blocked_by_market_filter"] = self.funnel_metrics.get("blocked_by_market_filter", 0) + 1
+                    msg = f"Blocked by NIFTY 50 market filter (SELL while NIFTY above VWAP/EMA20)"
                     logger.info(
                         f"[MARKET FILTER BLOCKED] SELL signal on {sym} blocked: NIFTY 50 above VWAP/EMA20 "
                         f"(Close={nifty_candle.close:.2f}, VWAP={nifty_candle.vwap:.2f}, EMA20={nifty_ema_20:.2f})"
                     )
+                    await self._record_funnel_log(candle, profile, "SIGNAL", False, msg)
                     return None
 
-            # Gate 5: Pre-Order Gemini Vision Chart Trap Filter (only runs on confirmed signals when enabled)
+            # Gate 5: Pre-Order Hydrogen Vision Chart Trap Filter (only runs on confirmed signals when enabled)
             if getattr(settings, "enable_vision_filter", True):
                 vision_res = await self.vision_filter.evaluate_signal(
                     signal=signal,
@@ -397,22 +480,35 @@ class LiveStrategyRunner:
                 )
                 signal.metadata["vision_filter"] = vision_res
                 decision_label = "APPROVED" if vision_res.get("approved", True) else "VETOED"
+                is_fail_open = bool(vision_res.get("fail_open", False))
                 vision_msg = (
                     f"[VISION FILTER] {decision_label} {sym} {signal.side.value} "
                     f"(Conf={vision_res.get('confidence', 0.0):.2f}): {vision_res.get('reason', '')}"
                 )
-                logger.info(vision_msg)
-                await self.bus.publish(
-                    RiskAlertEvent(
-                        symbol=sym,
-                        level="INFO" if vision_res.get("approved", True) else "WARNING",
-                        message=vision_msg,
-                        timestamp_ist=candle.timestamp_ist,
-                    )
-                )
+                if is_fail_open:
+                    logger.debug(vision_msg)
+                else:
+                    logger.info(vision_msg)
+
+                # Never pollute SENTINEL NEWSWIRE or RiskAlerts with fail-open / HTTP error noise
                 if not vision_res.get("approved", True):
+                    await self.bus.publish(
+                        RiskAlertEvent(
+                            symbol=sym,
+                            level="WARNING",
+                            message=vision_msg,
+                            timestamp_ist=candle.timestamp_ist,
+                        )
+                    )
                     self.funnel_metrics["blocked_by_vision_filter"] = (
                         self.funnel_metrics.get("blocked_by_vision_filter", 0) + 1
+                    )
+                    await self._record_funnel_log(
+                        candle,
+                        profile,
+                        "SIGNAL",
+                        False,
+                        f"Vision trap veto: {vision_res.get('reason', '')}",
                     )
                     return None
 
@@ -421,6 +517,15 @@ class LiveStrategyRunner:
                 self.funnel_metrics["passed_stock_rule"] += 1
             if not passed_sector:
                 self.funnel_metrics["passed_sector_filter"] += 1
+
+            await self._record_funnel_log(
+                candle,
+                profile,
+                "SIGNAL",
+                True,
+                f"Signal emitted: {signal.side.value} @ Rs.{signal.entry_price:.2f} "
+                f"(SL: {signal.stop_loss:.2f}, TP: {signal.target_price:.2f})",
+            )
 
             logger.info(
                 f"[SIGNAL GENERATED] {signal.strategy_name} -> {signal.tradingsymbol} {signal.side.value} "

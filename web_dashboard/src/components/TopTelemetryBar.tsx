@@ -18,7 +18,7 @@ import {
   TrendingUp,
   Zap,
 } from "lucide-react";
-import { ClosedTrade, EngineStatus, Position, Tick } from "@/types/telemetry";
+import { ClosedTrade, EngineStatus, FunnelStage, Position, Tick } from "@/types/telemetry";
 import { ConnectionStatus } from "@/hooks/useTrillionaireStream";
 import { getIstClockString, isIstCutoffWindow } from "@/lib/istTime";
 import { computeOpenPositionMetrics } from "@/lib/pnl";
@@ -39,6 +39,7 @@ interface TopTelemetryBarProps {
   onStopEngine: () => Promise<void>;
   onPauseTrading?: () => Promise<void>;
   onResumeTrading?: () => Promise<void>;
+  onOpenEvaluationModal?: (stage: FunnelStage) => void;
   onRefresh: () => void;
 }
 
@@ -58,6 +59,7 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
   onStopEngine,
   onPauseTrading,
   onResumeTrading,
+  onOpenEvaluationModal,
   onRefresh,
 }) => {
   const [istTime, setIstTime] = useState<string>("");
@@ -283,22 +285,52 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
             </span>
           </div>
 
-          {/* Signal Funnel Counters */}
+          {/* Clickable Signal Funnel Counters -> Opens Trillionaire Evaluation Report Modal */}
           {status?.funnel_metrics && (
             <>
               <div className="h-3.5 w-px bg-cockpit-border" />
               <div
-                className="flex items-center space-x-1.5 text-[11px] font-mono text-cockpit-muted"
-                title="Live Signal Evaluation Funnel (Candles Evaluated → Stock Filter → Sector Filter → Emitted Signals)"
+                className="flex items-center space-x-1 text-[11px] font-mono text-cockpit-muted"
+                title="Click any stage to open Trillionaire Evaluation Report"
               >
-                <span className="text-cockpit-blue font-semibold">Funnel:</span>
-                <span>{status.funnel_metrics.candles_evaluated} Eval</span>
+                <button
+                  type="button"
+                  onClick={() => onOpenEvaluationModal?.("ALL")}
+                  className="text-cockpit-blue font-semibold px-1 py-0.5 rounded hover:bg-cockpit-surface cursor-pointer transition"
+                >
+                  Funnel:
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onOpenEvaluationModal?.("EVAL")}
+                  className="px-1 py-0.5 rounded hover:bg-blue-500/15 hover:text-blue-300 cursor-pointer transition"
+                >
+                  {status.funnel_metrics.candles_evaluated} Eval
+                </button>
                 <span>→</span>
-                <span className="text-cyan-400 font-semibold">{status.funnel_metrics.passed_stock_rule} Stock</span>
+                <button
+                  type="button"
+                  onClick={() => onOpenEvaluationModal?.("STOCK")}
+                  className="text-cyan-400 font-semibold px-1 py-0.5 rounded hover:bg-cyan-500/15 cursor-pointer transition"
+                >
+                  {status.funnel_metrics.passed_stock_rule} Stock
+                </button>
                 <span>→</span>
-                <span className="text-amber-400 font-semibold">{status.funnel_metrics.passed_sector_filter} Sector</span>
+                <button
+                  type="button"
+                  onClick={() => onOpenEvaluationModal?.("SECTOR")}
+                  className="text-amber-400 font-semibold px-1 py-0.5 rounded hover:bg-amber-500/15 cursor-pointer transition"
+                >
+                  {status.funnel_metrics.passed_sector_filter} Sector
+                </button>
                 <span>→</span>
-                <span className="text-cockpit-green font-bold">{status.funnel_metrics.signals_emitted} Sig</span>
+                <button
+                  type="button"
+                  onClick={() => onOpenEvaluationModal?.("SIGNAL")}
+                  className="text-cockpit-green font-bold px-1 py-0.5 rounded hover:bg-emerald-500/15 cursor-pointer transition"
+                >
+                  {status.funnel_metrics.signals_emitted} Sig
+                </button>
               </div>
             </>
           )}

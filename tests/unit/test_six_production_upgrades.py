@@ -171,7 +171,7 @@ def test_rehydrate_from_redis_mocked():
 # -----------------------------------------------------------------------------
 
 def test_5_milestones_structure():
-    """Verifies get_lifecycle_milestones returns all 5 required milestones with valid schema."""
+    """Verifies get_lifecycle_milestones returns all 6 required milestones with valid schema."""
     bus = EventBus()
     mock_auth = MagicMock()
     mock_auth.get_valid_access_token.return_value = "tok"
@@ -182,11 +182,12 @@ def test_5_milestones_structure():
 
     assert "summary_label" in milestones
     assert "milestones" in milestones
-    assert milestones["total_count"] == 5
+    assert milestones["total_count"] == 6
 
     milestone_ids = [m["id"] for m in milestones["milestones"]]
     assert milestone_ids == [
         "kite_auth",
+        "engine_restarted",
         "universe_warmed",
         "ticker_connected",
         "ticks_flowing",

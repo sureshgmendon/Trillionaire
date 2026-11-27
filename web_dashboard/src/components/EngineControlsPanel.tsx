@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { EngineStatus } from "@/types/telemetry";
 import { isIstCutoffWindow } from "@/lib/istTime";
+import { DownloadReportsControl } from "@/components/DownloadReportsControl";
 
 interface EngineControlsPanelProps {
   status: EngineStatus | null;
@@ -185,6 +186,14 @@ export const EngineControlsPanel: React.FC<EngineControlsPanelProps> = ({
             <Power className="h-4 w-4 text-cockpit-red" />
             <span>FLATTEN ALL POSITIONS</span>
           </button>
+
+          {/* Unified Date-Wise Multi-Tab XLSX Reports Control */}
+          <div className="pt-2 border-t border-cockpit-border/70">
+            <div className="text-[10px] font-mono uppercase text-cockpit-muted font-bold mb-1">
+              Reports Export (.xlsx)
+            </div>
+            <DownloadReportsControl compact />
+          </div>
         </div>
       </div>
 
